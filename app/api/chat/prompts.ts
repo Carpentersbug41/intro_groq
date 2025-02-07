@@ -1,5 +1,15 @@
 // export const PROMPT_LIST = [
 
+type PromptType = {
+  prompt_text: string;
+  validation?: boolean;
+  important_memory?: boolean;
+  autoTransitionHidden?: boolean;
+  autoTransitionVisible?: boolean;
+  chaining?: boolean; // ✅ Add this line
+};
+
+
 export const PROMPT_LIST = [
 
   {
@@ -37,6 +47,7 @@ export const PROMPT_LIST = [
  // important_memory: true,
  // chaining: true,
  // important_memory: true, 
+ chaining: false, // ✅ Always include chaining
   },
  
  
@@ -56,6 +67,7 @@ export const PROMPT_LIST = [
  important_memory: true,
  // validation: true,
  autoTransitionHidden: true,
+ chaining: false, // ✅ Always include chaining
     
   },
   {
@@ -197,6 +209,7 @@ Step 2:  Check that the user wants to continue with this question.`,
 // important_memory: true,
 // chaining: true,
 // autoTransitionHidden: true,
+chaining: false, // ✅ Always include chaining
 
   },
 
@@ -222,6 +235,7 @@ autoTransitionVisible: true,
 important_memory: true,
 // chaining: true,
 // autoTransitionHidden: true,
+chaining: false, // ✅ Always include chaining
 
   },
   {
@@ -241,6 +255,7 @@ important_memory: true,
 // validation: true,
 // important_memory: true,
 // chaining: true,
+chaining: false, // ✅ Always include chaining
   },
 
 
@@ -265,6 +280,7 @@ autoTransitionVisible: true,
 important_memory: true,
 // chaining: true,
 // autoTransitionHidden: true,
+chaining: false, // ✅ Always include chaining
   },
   {
    "prompt_text": `# System message:
@@ -289,6 +305,7 @@ important_memory: true,
    // validation: true,
    important_memory: true,
    // chaining: true,
+   chaining: false, // ✅ Always include chaining
  },
  {
    "prompt_text": `# System message:
@@ -309,6 +326,7 @@ important_memory: true,
    // validation: true,
    important_memory: true,
    // chaining: true,
+   chaining: false, // ✅ Always include chaining
  },
  {
    "prompt_text": `# System message:
@@ -362,6 +380,7 @@ important_memory: true,
    // validation: true,
    // important_memory: true,
    // chaining: true,
+   chaining: false, // ✅ Always include chaining
  }
 , 
 
@@ -381,6 +400,7 @@ Step 3:  Only ask 'Are you ready to continue?'.  Never add extra information.
 validation: true,
 // important_memory: true,
 // chaining: true,
+chaining: false, // ✅ Always include chaining
 },
 {
   "prompt_text": `# System message:
@@ -450,6 +470,7 @@ Your goal is to **analyze clause order and provide appropriate feedback based on
   // validation: true,
   // important_memory: true,
   // chaining: true,
+  chaining: false, // ✅ Always include chaining
 },
 
 {
@@ -467,6 +488,7 @@ Step 3:  Only ask 'Are you ready to continue?'.  Never add extra information.
 validation: true,
 // important_memory: true,
 // chaining: true,
+chaining: false, // ✅ Always include chaining
 },
 
 {
@@ -523,6 +545,7 @@ Your goal is to help the user **ensure their ideas are clear, relevant, and well
   // validation: true,
   // important_memory: true,
   // chaining: true,
+  chaining: false, // ✅ Always include chaining
 }
 ,
 {
@@ -600,6 +623,7 @@ Your goal is to **ensure the user’s introduction follows the expected IELTS st
   // validation: true,
   // important_memory: true,
   // chaining: true,
+  chaining: false, // ✅ Always include chaining
 }
 ,
 {
@@ -679,6 +703,7 @@ Your goal is to help the user **effectively answer the question with relevant, w
   // validation: true,
   // important_memory: true,
   // chaining: true,
+  chaining: false, // ✅ Always include chaining
 }
 ,
 {
@@ -753,6 +778,7 @@ Your goal is to help the user **achieve a clear, logical, and well-connected ess
   // validation: true,
   // important_memory: true,
   // chaining: true,
+  chaining: false, // ✅ Always include chaining
 }
 ,
 {
@@ -827,6 +853,7 @@ Your goal is to help the user **use a wide range of precise, natural, and sophis
   // validation: true,
   // important_memory: true,
   // chaining: true,
+  chaining: false, // ✅ Always include chaining
 }
 ,
 {
@@ -897,6 +924,7 @@ Your goal is to help the user **use grammatically accurate, varied, and fluent s
   // validation: true,
   // important_memory: true,
   // chaining: true,
+  chaining: false, // ✅ Always include chaining
 }
 
 

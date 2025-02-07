@@ -81,8 +81,8 @@ export default function AgentsPage() {
       emptyStateComponent={InfoCard}
       placeholder="Squawk! I'm a conversational agent! Ask me about the current weather in Honolulu!"
       titleText="Polly the Agentic Parrot"
-      emoji="🦜"
-      showIntermediateStepsToggle={true}
+  
+  
     ></ChatWindow>
   );
 }
