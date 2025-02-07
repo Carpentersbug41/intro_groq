@@ -1,80 +1,36 @@
+"use client";
+
 import { ChatWindow } from "@/components/ChatWindow";
 
-export default function Home() {
+export default function ChatIELTSPage() {
+  // Empty state content to show if no messages exist yet
   const InfoCard = (
-    <div className="p-4 md:p-8 rounded bg-[#25252d] w-full max-h-[85%] overflow-hidden">
-      <h1 className="text-3xl md:text-4xl mb-4">
-        ▲ Next.js + LangChain.js 🦜🔗
-      </h1>
-      <ul>
-        <li className="text-l">
-          🤝
-          <span className="ml-2">
-            This template showcases a simple chatbot using{" "}
-            <a href="https://js.langchain.com/" target="_blank">
-              LangChain.js
-            </a>{" "}
-            and the Vercel{" "}
-            <a href="https://sdk.vercel.ai/docs" target="_blank">
-              AI SDK
-            </a>{" "}
-            in a{" "}
-            <a href="https://nextjs.org/" target="_blank">
-              Next.js
-            </a>{" "}
-            project.
-          </span>
-        </li>
-        <li className="hidden text-l md:block">
-          💻
-          <span className="ml-2">
-            You can find the prompt and model logic for this use-case in{" "}
-            <code>app/api/chat/route.ts</code>.
-          </span>
-        </li>
-        <li>
-          🏴‍☠️
-          <span className="ml-2">
-            By default, the bot is pretending to be a pirate, but you can change
-            the prompt to whatever you want!
-          </span>
-        </li>
-        <li className="hidden text-l md:block">
-          🎨
-          <span className="ml-2">
-            The main frontend logic is found in <code>app/page.tsx</code>.
-          </span>
-        </li>
-        <li className="text-l">
-          🐙
-          <span className="ml-2">
-            This template is open source - you can see the source code and
-            deploy your own version{" "}
-            <a
-              href="https://github.com/langchain-ai/langchain-nextjs-template"
-              target="_blank"
-            >
-              from the GitHub repo
-            </a>
-            !
-          </span>
-        </li>
-        <li className="text-l">
-          👇
-          <span className="ml-2">
-            Try asking e.g. <code>What is it like to be a pirate?</code> below!
-          </span>
-        </li>
+    <div className="p-4 bg-gray-50 border border-gray-200 rounded-md">
+      <h1 className="text-xl font-semibold mb-2">IELTS Introduction Practice</h1>
+      <p className="text-gray-700">
+        This chatbot helps students practice <strong>IELTS writing introduction Part 2</strong> by providing structured feedback.
+      </p>
+      <ul className="list-disc list-inside text-gray-700 space-y-2 mt-2">
+        <li>Submit your Part 2 introductions for evaluation.</li>
+        <li>Receive structured feedback based on IELTS criteria.</li>
+        <li>Improve fluency, coherence, and vocabulary.</li>
       </ul>
+      <p className="mt-2 text-gray-700">
+        Enter your <strong>IELTS writing Part 2</strong> response below to get started.
+      </p>
     </div>
   );
+
   return (
-    <ChatWindow
-      endpoint="api/chat"
-      emoji="🏴‍☠️"
-      titleText="Patchy the Chatty Pirate"
-      placeholder="I'm an LLM pretending to be a pirate! Ask me about the pirate life!"
-      emptyStateComponent={InfoCard}
-    ></ChatWindow>
+    <div>
+      {/* Chat Window */}
+      <ChatWindow
+        endpoint="/api/chat"
+        titleText="IELTS Introduction Assistant"
+        placeholder="Enter your IELTS Part 2 introduction..."
+        emptyStateComponent={InfoCard}
+        videoId="zGM30-iAoZA"
+      />
+    </div>
   );
 }

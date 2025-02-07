@@ -37,6 +37,85 @@ const customValidationInstructionForList = `
   Do not provide any additional explanation or description.
 `;
 
+const PROMPT_LIST = [
+
+
+
+  
+
+
+  {
+    prompt_text: `#System message:
+Ask the user what their favorite color is.
+
+NEVER GIVE LONG ANSWERS!`,
+    
+    // important_memory: true,
+  },
+  {
+    prompt_text: `#System message:
+Ask the user what their favorite book is.`,
+important_memory: true,
+validation: true,
+
+  },
+  {
+    prompt_text: `#System message:
+Ask the user what their favorite movie is.
+
+NEVER GIVE LONG ANSWERS!
+
+-Always ask about movies, not books.  Books are so lame right now`,
+
+
+  },
+  {
+    prompt_text: `#System message:
+Ask the user what their favorite animal is.`,
+    important_memory: true,
+  },
+  {
+    prompt_text: `#System message:
+Ask the user what their favorite country is.
+
+NEVER GIVE LONG ANSWERS!`,validation: true,
+ 
+  },
+  {
+    prompt_text: `#System message:
+Ask the user what their favorite animal is.`,
+    important_memory: true,
+  },
+  {
+    prompt_text: `#System message:
+Ask the user to input a number.
+Step 1.  Ask the user 'Input a number?'
+Step 2.  Never ask anything else only 'input a number?'
+Step 3.  Only ask the user 'Input a number'.NEVER SAY ANYTHING ELSE!`,
+    validation: true,
+  },
+  {
+    prompt_text: `#System message:
+Add 2 to the number you have.
+#Additional rule: NEVER include the exact text '#System message:' anywhere in your assistant output.`,
+    chaining: true,
+  },
+  {
+    prompt_text: `#System message:
+Multiply the number from the last result by 100 and output the result.`,
+    chaining: true,
+  },
+  {
+    prompt_text: `#System message:
+Divide the number from the last result by 4 and output the result.`,
+    chaining: true,
+  },
+  {
+    prompt_text: `#System message:
+Ask the user if this is correct.`,
+    // chaining not set, so chain stops here.
+  },
+];
 
 // ---------------------------------------------------------------------------------
 // 1) MINIMAL VALIDATION CALL (MODIFIED TO ACCEPT A CUSTOM VALIDATION INSTRUCTION)
@@ -46,11 +125,6 @@ async function validateInput(
   currentPrompt: string,
   customValidation?: string
 ) {
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
-    return "Please enter your GROQ API key.";
-  }
-
   let finalInstruction: string;
   if (customValidation) {
     finalInstruction = customValidation
@@ -65,37 +139,32 @@ async function validateInput(
   console.log("\n[DEBUG] Validation Payload (Minimal):", { userInput, currentPrompt });
 
   const payload = {
-    model: "llama-3.3-70b-versatile",
+    model: "llama-3.1-8b-instant",
     temperature: 0,
     messages: [{ role: "system", content: finalInstruction }],
   };
 
-  try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      },
-      body: JSON.stringify(payload),
-    });
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+    },
+    body: JSON.stringify(payload),
+  });
 
-    if (!response.ok) {
-      console.error("[ERROR] Validation API call failed. Returning fallback message.");
-      return "There was an issue validating your input. Please try again.";
-    }
-
-    const responseData = await response.json();
-    const validationResult = responseData.choices?.[0]?.message?.content?.trim() || "INVALID";
-    console.log("[DEBUG] Validation Result:", validationResult);
-
-    return validationResult === "VALID";
-  } catch (error: any) {
-    console.error("[ERROR] Failed to validate input:", error.message);
-    return "An error occurred while validating input. Please try again.";
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("[ERROR] Validation API call failed:\n", errorText);
+    throw new Error(`Validation API error: ${response.statusText}`);
   }
-}
 
+  const responseData = await response.json();
+  const validationResult = responseData.choices?.[0]?.message?.content?.trim() || "INVALID";
+  console.log("[DEBUG] Validation Result:", validationResult);
+
+  return validationResult === "VALID";
+}
 
 // ---------------------------------------------------------------------------------
 // 2) RETRY MESSAGE GENERATOR IF INVALID (DO NOT MODIFY THIS SECTION)
@@ -106,13 +175,8 @@ async function generateRetryMessage(
 ): Promise<string> {
   console.log("\n[DEBUG] Generating Retry Message for invalid input:", userInput);
 
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
-    return "Please enter your GROQ API key.";
-  }
-
   const payload = {
-    model: "llama-3.3-70b-versatile",
+    model: "llama-3.1-8b-instant",
     temperature: 0,
     messages: [
       { role: "system", content: currentPrompt },
@@ -120,35 +184,30 @@ async function generateRetryMessage(
     ],
   };
 
-  try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      },
-      body: JSON.stringify(payload),
-    });
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+    },
+    body: JSON.stringify(payload),
+  });
 
-    if (!response.ok) {
-      console.error("[ERROR] Retry API call failed. Returning fallback retry message.");
-      return "I didn't quite get that. Can you try rephrasing your answer?";
-    }
-
-    const responseData = await response.json();
-    const retryContent = responseData.choices?.[0]?.message?.content?.trim();
-
-    if (!retryContent) {
-      console.warn("[WARNING] No retry content returned. Using fallback message.");
-      return "Hmm, I still didn't understand. Can you clarify?";
-    }
-
-    console.log("[DEBUG] Retry Message Generated:\n", retryContent);
-    return retryContent;
-  } catch (error: any) {
-    console.error("[ERROR] Failed to generate retry message:", error.message);
-    return "Something went wrong. Please try again.";
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("[ERROR] Retry API call failed:\n", errorText);
+    throw new Error(`Retry API error: ${response.statusText}`);
   }
+
+  const responseData = await response.json();
+  const retryContent = responseData.choices?.[0]?.message?.content;
+
+  if (!retryContent) {
+    throw new Error("Invalid retry response: No content.");
+  }
+
+  console.log("[DEBUG] Retry Message Generated:\n", retryContent);
+  return retryContent;
 }
 
 // ---------------------------------------------------------------------------------
@@ -159,12 +218,6 @@ async function fetchApiResponse(payload: any): Promise<string | null> {
     "\n[DEBUG] Basic fetchApiResponse call with payload:\n",
     JSON.stringify(payload, null, 2)
   );
-
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
-    return "Please enter your GROQ API key.";
-  }
-
   try {
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -178,24 +231,16 @@ async function fetchApiResponse(payload: any): Promise<string | null> {
     if (!response.ok) {
       const errorText = await response.text();
       console.error("[ERROR] fetchApiResponse call failed:\n", errorText);
-      return "There was an issue with the API request. Please check your API key.";
+      return null;
     }
 
     const responseData = await response.json();
-    const responseContent = responseData.choices?.[0]?.message?.content?.trim();
-
-    if (!responseContent) {
-      console.warn("[WARNING] API response returned no content.");
-      return "I didn't get a response from the API. Please try again.";
-    }
-
-    return responseContent;
+    return responseData.choices?.[0]?.message?.content || null;
   } catch (error: any) {
     console.error("[ERROR] in fetchApiResponse:\n", error.message);
-    return "An error occurred while fetching the response. Please try again.";
+    return null;
   }
 }
-
 
 // ---------------------------------------------------------------------------------
 // Helper: Fetch API Response with Retry Logic
@@ -205,35 +250,23 @@ async function fetchApiResponseWithRetry(
   retries = 2,
   delayMs = 500
 ): Promise<string | null> {
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
-    return "Please enter your GROQ API key.";
-  }
-
   let attempt = 0;
   while (attempt < retries) {
     attempt++;
     console.log(`[DEBUG] Retry Attempt: ${attempt}/${retries}`);
-
     const response = await fetchApiResponse(payload);
     if (response) return response;
 
     console.warn(`[WARN] Attempt ${attempt} failed. Retrying in ${delayMs}ms...`);
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
-
-  return "The request failed after multiple attempts. Please try again later.";
+  return null;
 }
 
 // ---------------------------------------------------------------------------------
 // 4) chainIfNeeded LOGIC (UPDATED TO UPDATE THE SYSTEM PROMPT)
 // ---------------------------------------------------------------------------------
 async function chainIfNeeded(assistantContent: string): Promise<string | null> {
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
-    return "Please enter your GROQ API key.";
-  }
-
   let chainResponse = assistantContent;
 
   while (
@@ -257,7 +290,7 @@ async function chainIfNeeded(assistantContent: string): Promise<string | null> {
     // Append the last assistant output (the chainResponse) as a user message.
     conversationHistory.push({ role: "user", content: chainResponse });
 
-    // Remove duplicate assistant responses
+    // Remove duplicates
     conversationHistory = conversationHistory.filter((entry, index, self) => {
       if (entry.role !== "assistant") return true;
       if (index < self.length - 1 && self[index + 1]?.role === "user") {
@@ -279,48 +312,42 @@ async function chainIfNeeded(assistantContent: string): Promise<string | null> {
 
     currentIndex++;
 
-    try {
-      const chainResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
-          temperature: 0,
-          messages: tempHistory,
-        }),
-      });
+    const chainResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        temperature: 0,
+        messages: tempHistory,
+      }),
+    });
 
-      if (!chainResp.ok) {
-        const errorText = await chainResp.text();
-        console.error("[CHAIN DEBUG] Chaining request failed:\n", errorText);
-        return chainResponse; // fallback to previous response
-      }
-
-      const chainData = await chainResp.json();
-      const newContent = chainData.choices?.[0]?.message?.content;
-
-      if (!newContent) {
-        console.warn("[CHAIN DEBUG] No content returned from chain. Stopping chaining.");
-        return chainResponse;
-      }
-
-      console.log("[CHAIN DEBUG] newAssistantContent from chain:", newContent);
-
-      conversationHistory.push({ role: "assistant", content: newContent });
-      chainResponse = newContent;
-    } catch (error: any) {
-      console.error("[ERROR] in chainIfNeeded:\n", error.message);
-      return "An error occurred while processing the chaining request. Please try again.";
+    if (!chainResp.ok) {
+      const errorText = await chainResp.text();
+      console.error("[CHAIN DEBUG] Chaining request failed:\n", errorText);
+      return chainResponse; // fallback
     }
+
+    const chainData = await chainResp.json();
+    const newContent = chainData.choices?.[0]?.message?.content;
+
+    if (!newContent) {
+      console.warn("[CHAIN DEBUG] No content returned from chain. Stopping chaining.");
+      return chainResponse;
+    }
+
+    console.log("[CHAIN DEBUG] newAssistantContent from chain:", newContent);
+
+    conversationHistory.push({ role: "assistant", content: newContent });
+    chainResponse = newContent;
   }
 
   console.log("[CHAIN DEBUG] Next prompt is NOT chaining. Stopping chain here.");
   return chainResponse;
 }
-
 
 // ---------------------------------------------------------------------------------
 // 5) Auto-TransitionHidden Helper Function (Encapsulated)
@@ -335,65 +362,34 @@ async function handleAutoTransitionHidden(
 }> {
   console.log("[AUTO-HIDDEN] Starting auto-transition hidden process...");
 
-  // Check if the API key is available
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
-    return {
-      conversationHistory: convHistory,
-      response: "Please enter your GROQ API key.",
-      updatedIndex: idx,
-    };
-  }
-
-  // Append a silent acknowledgment from the user
   convHistory.push({ role: "user", content: "OK" });
-  console.log("[AUTO-HIDDEN] user 'OK' appended, but it won’t be shown to the user.");
+  console.log("[AUTO-HIDDEN] user 'OK' appended, but we won't show it to the user in final text.");
 
   idx++;
   const nextPrompt = PROMPT_LIST[idx]?.prompt_text || "No further prompts.";
   console.log("[AUTO-HIDDEN] Next prompt text:", nextPrompt);
 
-  // Update system message
   convHistory = [
     { role: "system", content: nextPrompt },
     ...convHistory.filter((e) => e.role !== "system"),
   ];
 
-  // Construct API request payload
-  const payload = {
-    model: "llama-3.3-70b-versatile",
+  const payload2 = {
+    model: "llama-3.1-8b-instant",
     messages: convHistory,
   };
 
-  // Fetch API response with retry logic
-  const autoResponse = await fetchApiResponseWithRetry(payload, 2, 500);
+  const autoResponse = await fetchApiResponseWithRetry(payload2, 2, 500);
 
   if (!autoResponse) {
-    console.warn("[AUTO-HIDDEN] Second LLM call returned no content.");
+    console.warn("[AUTO-HIDDEN] second LLM call returned no content.");
     return { conversationHistory: convHistory, response: null, updatedIndex: idx };
   }
 
-  // Append assistant's response
   convHistory.push({ role: "assistant", content: autoResponse });
-
-  // **Debugging: Check if the prompt requires memory retention**
-  console.log(
-    "[AUTO-HIDDEN DEBUG] Checking if this prompt requires important memory:",
-    PROMPT_LIST[idx]?.important_memory
-  );
-
-  if (PROMPT_LIST[idx]?.important_memory) {
-    console.log("[AUTO-HIDDEN DEBUG] This prompt is marked as important. Inserting into memory.");
-    
-    insertImportantMemory(autoResponse); // Store important response in memory
-
-    console.log("[DEBUG] Important memory successfully inserted for this transition.");
-  }
 
   return { conversationHistory: convHistory, response: autoResponse, updatedIndex: idx };
 }
-
-
 
 // ---------------------------------------------------------------------------------
 // 5b) Auto-TransitionVisible Helper Function (Encapsulated)
@@ -408,63 +404,31 @@ async function handleAutoTransitionVisible(
 }> {
   console.log("[AUTO-VISIBLE] Starting auto-transition visible process...");
 
-  // Ensure API key exists before making a request
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API Key. Request cannot proceed.");
-    return {
-      conversationHistory: convHistory,
-      response: "Please enter your Groq API Key to continue.",
-      updatedIndex: idx,
-    };
-  }
-
-  // Append user confirmation (visible transition)
   convHistory.push({ role: "user", content: "OK" });
-  console.log("[AUTO-VISIBLE] User 'OK' appended (visible).");
+  console.log("[AUTO-VISIBLE] user 'OK' appended (visible).");
 
-  // Move to the next prompt
   idx++;
   const nextPrompt = PROMPT_LIST[idx]?.prompt_text || "No further prompts.";
   console.log("[AUTO-VISIBLE] Next prompt text:", nextPrompt);
 
-  // Update conversation history with new system prompt
   convHistory = [
     { role: "system", content: nextPrompt },
     ...convHistory.filter((e) => e.role !== "system"),
   ];
 
-  // Prepare payload for the API request
   const payload2 = {
-    model: "llama-3.3-70b-versatile",
+    model: "llama-3.1-8b-instant",
     messages: convHistory,
   };
 
-  // Fetch API response with retry logic
   const autoResponse = await fetchApiResponseWithRetry(payload2, 2, 500);
 
-  // Handle cases where the API fails to return content
   if (!autoResponse) {
-    console.warn("[AUTO-VISIBLE] Second LLM call returned no content.");
+    console.warn("[AUTO-VISIBLE] second LLM call returned no content.");
     return { conversationHistory: convHistory, response: null, updatedIndex: idx };
   }
 
-  // Append assistant response to the conversation
   convHistory.push({ role: "assistant", content: autoResponse });
-
-  // **Check for important memory**
-  console.log(
-    "[AUTO-VISIBLE DEBUG] Checking if this prompt requires important memory:",
-    PROMPT_LIST[idx]?.important_memory
-  );
-
-  if (PROMPT_LIST[idx]?.important_memory) {
-    console.log("[AUTO-VISIBLE DEBUG] This prompt is marked as important. Inserting into memory.");
-    
-    // Insert important memory
-    insertImportantMemory(autoResponse);
-
-    console.log("[DEBUG] Important_memory successfully inserted for this transition.");
-  }
 
   return { conversationHistory: convHistory, response: autoResponse, updatedIndex: idx };
 }
@@ -473,52 +437,20 @@ async function handleAutoTransitionVisible(
 // 6) MAIN POST HANDLER (WITH OPTIONAL VALIDATION CHECK + BUFFER MANAGEMENT + AUTO-TRANSITION)
 // ---------------------------------------------------------------------------------
 export async function POST(req: NextRequest) {
+  // Check if body.stream is set
   let body: any;
-
   try {
     body = await req.json();
   } catch (err) {
-    console.error("[ERROR] Failed to parse request body:", err);
-    return new Response(
-      JSON.stringify({ error: "Invalid request format. Please send valid JSON." }),
-      { status: 400, headers: { "Content-Type": "application/json" } }
-    );
+    return new Response("No input received. Please try again.", { status: 400 });
   }
 
-  // Extract fields safely
-  const { message, apiKey, stream } = body || {};
-
-  // Validate API key
-  if (!apiKey || typeof apiKey !== "string") {
-    console.warn("[WARN] Missing or invalid API key.");
-    return new Response(
-      JSON.stringify({ error: "Missing API key. Please provide a valid Groq API key." }),
-      { status: 401, headers: { "Content-Type": "application/json" } }
-    );
-  }
-
-  // Validate message input
-  if (!message || typeof message !== "string") {
-    console.warn("[WARN] Missing or invalid message.");
-    return new Response(
-      JSON.stringify({ error: "Missing or invalid message. Please provide a valid text input." }),
-      { status: 400, headers: { "Content-Type": "application/json" } }
-    );
-  }
-
-  try {
-    // Handle streaming and non-streaming cases
-    if (stream === true) {
-      return await handleStreamingFlow(message, apiKey);
-    } else {
-      return await handleNonStreamingFlow(message, apiKey);
-    }
-  } catch (err) {
-    console.error("[ERROR] Unexpected error in POST handler:", err);
-    return new Response(
-      JSON.stringify({ error: "An internal server error occurred. Please try again later." }),
-      { status: 500, headers: { "Content-Type": "application/json" } }
-    );
+  // If stream === true, do SSE streaming
+  if (body.stream === true) {
+    return handleStreamingFlow(body.message);
+  } else {
+    // Else, do the existing "non-streaming" logic
+    return handleNonStreamingFlow(body.message);
   }
 }
 
@@ -531,10 +463,7 @@ export async function POST(req: NextRequest) {
 /******************************************
  * handleNonStreamingFlow (With Added Debugs)
  ******************************************/
-async function handleNonStreamingFlow(
-  incomingMessage: string,
-  apiKey: string
-): Promise<Response> {
+async function handleNonStreamingFlow(incomingMessage: string): Promise<Response> {
   try {
     const userMessage = incomingMessage?.trim();
 
@@ -542,15 +471,6 @@ async function handleNonStreamingFlow(
     if (!userMessage) {
       console.log("[WARN] No User Input Received. Returning Error.");
       return new Response("No input received. Please try again.", { status: 400 });
-    }
-
-    // Validate API key
-    if (!apiKey || typeof apiKey !== "string") {
-      console.warn("[WARN] Missing or invalid API key.");
-      return new Response(
-        JSON.stringify({ error: "Missing API key. Please provide a valid Groq API key." }),
-        { status: 401, headers: { "Content-Type": "application/json" } }
-      );
     }
 
     // Capture the current prompt (do not capture the flag here)
@@ -628,22 +548,20 @@ async function handleNonStreamingFlow(
 
     // 6) Build LLM payload
     const mainPayload = {
-      model: "llama-3.3-70b-versatile",
+      model: "llama-3.1-8b-instant",
       temperature: 0,
       messages: conversationHistory,
     };
     console.log("[DEBUG] Main Payload to LLM:\n", JSON.stringify(mainPayload, null, 2));
 
-    // Fetch response with API key from the request
     const mainResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`, // ✅ Uses API key from request
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
       },
       body: JSON.stringify(mainPayload),
     });
-
     if (!mainResp.ok) {
       const errorText = await mainResp.text();
       console.error("[ERROR] LLM call failed:\n", errorText);
@@ -656,30 +574,39 @@ async function handleNonStreamingFlow(
       return new Response("No content returned from the LLM. Please try again.", { status: 200 });
     }
 
+    /*********************************************
+     * ADDED DEBUG: Log the raw assistant response
+     *********************************************/
     console.log("[DEBUG] assistantContent1 from LLM:", assistantContent1);
 
     // 7) Add new assistant content to conversation history
     conversationHistory.push({ role: "assistant", content: assistantContent1 });
+    console.log("[DEBUG] First API Response Added to Conversation History.");
 
-    // 8) Insert important memory if applicable
+    // ***** START ADDED CODE *****
+    // Use the rule: if the prompt we just completed (currentIndex - 2) is marked as important_memory, insert important memory.
     if (currentIndex - 0 >= 0 && PROMPT_LIST[currentIndex - 0]?.important_memory) {
       insertImportantMemory(assistantContent1);
     }
+    // ***** END ADDED CODE *****
 
-    // 9) Manage buffer again
+    // 8) Manage buffer again
     conversationHistory = manageBuffer(conversationHistory);
 
-    // 10) Possibly chain
+    // 9) Possibly chain
     let finalChained: string | null = null;
     if (PROMPT_LIST[currentIndex]?.chaining) {
       finalChained = await chainIfNeeded(assistantContent1);
     }
 
-    // 11) Auto-Transition Hidden
+    // 10) Auto-Transition Hidden
     if (PROMPT_LIST[currentIndex]?.autoTransitionHidden) {
       console.log("[DEBUG - AUTO-HIDDEN] autoTransitionHidden = true. Entering loop...");
+
+      // Create an array to collect auto-transition hidden responses.
       let autoResponses: string[] = [];
 
+      // Loop through all consecutive hidden prompts.
       while (
         currentIndex < PROMPT_LIST.length &&
         PROMPT_LIST[currentIndex]?.autoTransitionHidden
@@ -690,22 +617,36 @@ async function handleNonStreamingFlow(
 
         conversationHistory = updatedConv;
         currentIndex = updatedIndex;
+
+        // Append the fetched auto-response (which is still in the payload) to our array.
         autoResponses.push(autoResponse);
       }
 
+      // Determine the final visible text:
+      // Use the last auto-response as the text to show to the user.
       const finalVisible = autoResponses[autoResponses.length - 1] || (finalChained || assistantContent1);
+
+      // Log the hidden responses (all but the last one) so you know they were fetched.
+      for (let i = 0; i < autoResponses.length - 1; i++) {
+        console.log("[DEBUG] Hidden text NOT returned to user:", autoResponses[i]);
+      }
+
+      // Log the final text that will be returned to the user.
+      console.log("[DEBUG] Final text returned to user:", finalVisible);
       return new Response(finalVisible, { status: 200 });
     }
 
-    // 12) Auto-Transition Visible
+    // 11) Auto-Transition Visible
     if (PROMPT_LIST[currentIndex]?.autoTransitionVisible) {
       console.log("[DEBUG - AUTO-VISIBLE] autoTransitionVisible = true. Entering loop...");
+
       let combinedVisible = finalChained || assistantContent1;
 
       while (
         currentIndex < PROMPT_LIST.length &&
         PROMPT_LIST[currentIndex]?.autoTransitionVisible
       ) {
+        console.log("[DEBUG - AUTO-VISIBLE] Next prompt also autoTransitionVisible, continuing...");
         const { conversationHistory: updatedConv, response: autoResponse, updatedIndex } =
           await handleAutoTransitionVisible(conversationHistory, currentIndex);
 
@@ -713,34 +654,31 @@ async function handleNonStreamingFlow(
         currentIndex = updatedIndex;
 
         if (!autoResponse) {
+          console.log("[DEBUG] Final text returned to user:", combinedVisible);
           return new Response(combinedVisible, { status: 200 });
         }
         combinedVisible += "\n\n" + autoResponse;
       }
 
+      console.log("[DEBUG] Final text returned to user:", combinedVisible);
       return new Response(combinedVisible, { status: 200 });
     }
 
+    // 12) If no auto-transition, just return final
+    console.log("[DEBUG] Final text returned to user:", finalChained || assistantContent1);
     return new Response(finalChained || assistantContent1, { status: 200 });
 
   } catch (error: any) {
-    console.error("[ERROR] in handleNonStreamingFlow:", error.message);
-    return new Response(
-      JSON.stringify({ error: "An unexpected error occurred. Please try again." }),
-      { status: 500, headers: { "Content-Type": "application/json" } }
-    );
+    console.error("[ERROR] in POST handler:\n", error.message);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
-
 
 
 /******************************************
  * handleStreamingFlow (No Changes)
  ******************************************/
-async function handleStreamingFlow(
-  incomingMessage: string,
-  apiKey: string
-): Promise<Response> {
+async function handleStreamingFlow(incomingMessage: string): Promise<Response> {
   console.log("[INFO] [STREAM MODE] Received request for streaming.");
 
   if (!incomingMessage?.trim()) {
@@ -748,19 +686,13 @@ async function handleStreamingFlow(
     return new Response("No input received. Please try again.", { status: 400 });
   }
 
-  // ✅ Validate API key before making requests
-  if (!apiKey || typeof apiKey !== "string") {
-    console.warn("[WARN] Missing or invalid API key.");
-    return new Response(
-      JSON.stringify({ error: "Missing API key. Please provide a valid Groq API key." }),
-      { status: 401, headers: { "Content-Type": "application/json" } }
-    );
-  }
-
   // We'll do a *very simple* streaming approach:
   // 1) Insert user message into conversation
   // 2) Build a payload with `stream: true`
   // 3) Return SSE with partial tokens
+
+  // If you want to incorporate EXACT chaining/validation logic in streaming mode,
+  // you can replicate the steps from handleNonStreamingFlow. For brevity, we just do a single streamed response.
 
   conversationHistory.push({ role: "user", content: incomingMessage });
   conversationHistory = manageBuffer(conversationHistory);
@@ -771,18 +703,18 @@ async function handleStreamingFlow(
 
   // Build streaming payload
   const payload = {
-    model: "llama-3.3-70b-versatile",
+    model: "llama-3.1-8b-instant",
     temperature: 0,
     stream: true, // <--- important
     messages: conversationHistory,
   };
 
-  // ✅ Fetch response with API key from the request
+  // Make streaming call
   const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`, // ✅ Replaced the API key with the one from the request
+      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
     },
     body: JSON.stringify(payload),
   });
@@ -805,7 +737,7 @@ async function handleStreamingFlow(
       for await (const chunk of streamAsyncIterable(resp.body)) {
         const data = decoder.decode(chunk);
 
-        // The OpenAI SSE data lines often look like:
+        // The OpenAI SSE data lines often look like: 
         // data: {...}\n
         // data: {...}\n
         // data: [DONE]\n

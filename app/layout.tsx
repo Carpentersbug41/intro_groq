@@ -1,8 +1,6 @@
 import "./globals.css";
 import { Public_Sans } from "next/font/google";
 
-import { Navbar } from "@/components/Navbar";
-
 const publicSans = Public_Sans({ subsets: ["latin"] });
 
 export default function RootLayout({
@@ -13,30 +11,14 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        <title>LangChain + Next.js Template</title>
-        <link rel="shortcut icon" href="/images/favicon.ico" />
-        <meta
-          name="description"
-          content="Starter template showing how to use LangChain in Next.js projects. See source code and deploy your own at https://github.com/langchain-ai/langchain-nextjs-template!"
-        />
-        <meta property="og:title" content="LangChain + Next.js Template" />
-        <meta
-          property="og:description"
-          content="Starter template showing how to use LangChain in Next.js projects. See source code and deploy your own at https://github.com/langchain-ai/langchain-nextjs-template!"
-        />
-        <meta property="og:image" content="/images/og-image.png" />
-        <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content="LangChain + Next.js Template" />
-        <meta
-          name="twitter:description"
-          content="Starter template showing how to use LangChain in Next.js projects. See source code and deploy your own at https://github.com/langchain-ai/langchain-nextjs-template!"
-        />
-        <meta name="twitter:image" content="/images/og-image.png" />
+        <title>Chat</title>
+        <meta name="description" content="A simple chat interface." />
       </head>
-      <body className={publicSans.className}>
-        <div className="flex flex-col p-4 md:p-12 h-[100vh]">
-          <Navbar></Navbar>
-          {children}
+      {/* NOTE: Use correct backtick syntax for className */}
+      <body className={`${publicSans.className} bg-white text-gray-900`}>
+        <div className="flex flex-col items-center justify-center min-h-screen p-4">
+          <h1 className="text-2xl font-semibold mb-4">Chat</h1>
+          <div className="w-full max-w-2xl">{children}</div>
         </div>
       </body>
     </html>
