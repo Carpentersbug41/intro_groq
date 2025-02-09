@@ -37,90 +37,6 @@ const customValidationInstructionForList = `
   Do not provide any additional explanation or description.
 `;
 
-const PROMPT_LIST = [
-
-
-
-  
-
-
-  {
-    prompt_text: `#System message:
-Ask the user what their favorite color is.
-
-NEVER GIVE LONG ANSWERS!`,
-    
-    // important_memory: true,
-    validation: true,
-
-  },
-  {
-    prompt_text: `#System message:
-Ask the user what their favorite book is.`,
-
-important_memory: true,
-autoTransitionHidden: true,
-// important_memory: true,
-
-  },
-  {
-    prompt_text: `#System message:
-Ask the user what their favorite movie is.
-
-NEVER GIVE LONG ANSWERS!
-
--Always ask about movies, not books.  Books are so lame right now`,
-
-
-
-  },
-  {
-    prompt_text: `#System message:
-Ask the user what their favorite animal is.`,
-   
-  },
-  {
-    prompt_text: `#System message:
-Ask the user what their favorite country is.
-
-NEVER GIVE LONG ANSWERS!`,validation: true,
- 
-  },
-  {
-    prompt_text: `#System message:
-Ask the user what their favorite animal is.`,
-    important_memory: true,
-  },
-  {
-    prompt_text: `#System message:
-Ask the user to input a number.
-Step 1.  Ask the user 'Input a number?'
-Step 2.  Never ask anything else only 'input a number?'
-Step 3.  Only ask the user 'Input a number'.NEVER SAY ANYTHING ELSE!`,
-    validation: true,
-  },
-  {
-    prompt_text: `#System message:
-Add 2 to the number you have.
-#Additional rule: NEVER include the exact text '#System message:' anywhere in your assistant output.`,
-    chaining: true,
-  },
-  {
-    prompt_text: `#System message:
-Multiply the number from the last result by 100 and output the result.`,
-    chaining: true,
-  },
-  {
-    prompt_text: `#System message:
-Divide the number from the last result by 4 and output the result.`,
-    chaining: true,
-  },
-  {
-    prompt_text: `#System message:
-Ask the user if this is correct.`,
-    // chaining not set, so chain stops here.
-  },
-];
 
 // ---------------------------------------------------------------------------------
 // 1) MINIMAL VALIDATION CALL (MODIFIED TO ACCEPT A CUSTOM VALIDATION INSTRUCTION)
@@ -130,6 +46,11 @@ async function validateInput(
   currentPrompt: string,
   customValidation?: string
 ) {
+  if (!process.env.GROQ_API_KEY) {
+    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
+    return "Please enter your GROQ API key.";
+  }
+
   let finalInstruction: string;
   if (customValidation) {
     finalInstruction = customValidation
@@ -144,32 +65,37 @@ async function validateInput(
   console.log("\n[DEBUG] Validation Payload (Minimal):", { userInput, currentPrompt });
 
   const payload = {
-    model: "llama-3.1-8b-instant",
+    model: "llama-3.3-70b-versatile",
     temperature: 0,
     messages: [{ role: "system", content: finalInstruction }],
   };
 
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-    },
-    body: JSON.stringify(payload),
-  });
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+      },
+      body: JSON.stringify(payload),
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("[ERROR] Validation API call failed:\n", errorText);
-    throw new Error(`Validation API error: ${response.statusText}`);
+    if (!response.ok) {
+      console.error("[ERROR] Validation API call failed. Returning fallback message.");
+      return "There was an issue validating your input. Please try again.";
+    }
+
+    const responseData = await response.json();
+    const validationResult = responseData.choices?.[0]?.message?.content?.trim() || "INVALID";
+    console.log("[DEBUG] Validation Result:", validationResult);
+
+    return validationResult === "VALID";
+  } catch (error: any) {
+    console.error("[ERROR] Failed to validate input:", error.message);
+    return "An error occurred while validating input. Please try again.";
   }
-
-  const responseData = await response.json();
-  const validationResult = responseData.choices?.[0]?.message?.content?.trim() || "INVALID";
-  console.log("[DEBUG] Validation Result:", validationResult);
-
-  return validationResult === "VALID";
 }
+
 
 // ---------------------------------------------------------------------------------
 // 2) RETRY MESSAGE GENERATOR IF INVALID (DO NOT MODIFY THIS SECTION)
@@ -180,8 +106,13 @@ async function generateRetryMessage(
 ): Promise<string> {
   console.log("\n[DEBUG] Generating Retry Message for invalid input:", userInput);
 
+  if (!process.env.GROQ_API_KEY) {
+    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
+    return "Please enter your GROQ API key.";
+  }
+
   const payload = {
-    model: "llama-3.1-8b-instant",
+    model: "llama-3.3-70b-versatile",
     temperature: 0,
     messages: [
       { role: "system", content: currentPrompt },
@@ -189,30 +120,35 @@ async function generateRetryMessage(
     ],
   };
 
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-    },
-    body: JSON.stringify(payload),
-  });
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+      },
+      body: JSON.stringify(payload),
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("[ERROR] Retry API call failed:\n", errorText);
-    throw new Error(`Retry API error: ${response.statusText}`);
+    if (!response.ok) {
+      console.error("[ERROR] Retry API call failed. Returning fallback retry message.");
+      return "I didn't quite get that. Can you try rephrasing your answer?";
+    }
+
+    const responseData = await response.json();
+    const retryContent = responseData.choices?.[0]?.message?.content?.trim();
+
+    if (!retryContent) {
+      console.warn("[WARNING] No retry content returned. Using fallback message.");
+      return "Hmm, I still didn't understand. Can you clarify?";
+    }
+
+    console.log("[DEBUG] Retry Message Generated:\n", retryContent);
+    return retryContent;
+  } catch (error: any) {
+    console.error("[ERROR] Failed to generate retry message:", error.message);
+    return "Something went wrong. Please try again.";
   }
-
-  const responseData = await response.json();
-  const retryContent = responseData.choices?.[0]?.message?.content;
-
-  if (!retryContent) {
-    throw new Error("Invalid retry response: No content.");
-  }
-
-  console.log("[DEBUG] Retry Message Generated:\n", retryContent);
-  return retryContent;
 }
 
 // ---------------------------------------------------------------------------------
@@ -223,6 +159,12 @@ async function fetchApiResponse(payload: any): Promise<string | null> {
     "\n[DEBUG] Basic fetchApiResponse call with payload:\n",
     JSON.stringify(payload, null, 2)
   );
+
+  if (!process.env.GROQ_API_KEY) {
+    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
+    return "Please enter your GROQ API key.";
+  }
+
   try {
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -236,16 +178,24 @@ async function fetchApiResponse(payload: any): Promise<string | null> {
     if (!response.ok) {
       const errorText = await response.text();
       console.error("[ERROR] fetchApiResponse call failed:\n", errorText);
-      return null;
+      return "There was an issue with the API request. Please check your API key.";
     }
 
     const responseData = await response.json();
-    return responseData.choices?.[0]?.message?.content || null;
+    const responseContent = responseData.choices?.[0]?.message?.content?.trim();
+
+    if (!responseContent) {
+      console.warn("[WARNING] API response returned no content.");
+      return "I didn't get a response from the API. Please try again.";
+    }
+
+    return responseContent;
   } catch (error: any) {
     console.error("[ERROR] in fetchApiResponse:\n", error.message);
-    return null;
+    return "An error occurred while fetching the response. Please try again.";
   }
 }
+
 
 // ---------------------------------------------------------------------------------
 // Helper: Fetch API Response with Retry Logic
@@ -255,23 +205,35 @@ async function fetchApiResponseWithRetry(
   retries = 2,
   delayMs = 500
 ): Promise<string | null> {
+  if (!process.env.GROQ_API_KEY) {
+    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
+    return "Please enter your GROQ API key.";
+  }
+
   let attempt = 0;
   while (attempt < retries) {
     attempt++;
     console.log(`[DEBUG] Retry Attempt: ${attempt}/${retries}`);
+
     const response = await fetchApiResponse(payload);
     if (response) return response;
 
     console.warn(`[WARN] Attempt ${attempt} failed. Retrying in ${delayMs}ms...`);
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
-  return null;
+
+  return "The request failed after multiple attempts. Please try again later.";
 }
 
 // ---------------------------------------------------------------------------------
 // 4) chainIfNeeded LOGIC (UPDATED TO UPDATE THE SYSTEM PROMPT)
 // ---------------------------------------------------------------------------------
 async function chainIfNeeded(assistantContent: string): Promise<string | null> {
+  if (!process.env.GROQ_API_KEY) {
+    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
+    return "Please enter your GROQ API key.";
+  }
+
   let chainResponse = assistantContent;
 
   while (
@@ -295,7 +257,7 @@ async function chainIfNeeded(assistantContent: string): Promise<string | null> {
     // Append the last assistant output (the chainResponse) as a user message.
     conversationHistory.push({ role: "user", content: chainResponse });
 
-    // Remove duplicates
+    // Remove duplicate assistant responses
     conversationHistory = conversationHistory.filter((entry, index, self) => {
       if (entry.role !== "assistant") return true;
       if (index < self.length - 1 && self[index + 1]?.role === "user") {
@@ -317,42 +279,48 @@ async function chainIfNeeded(assistantContent: string): Promise<string | null> {
 
     currentIndex++;
 
-    const chainResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        temperature: 0,
-        messages: tempHistory,
-      }),
-    });
+    try {
+      const chainResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: "llama-3.3-70b-versatile",
+          temperature: 0,
+          messages: tempHistory,
+        }),
+      });
 
-    if (!chainResp.ok) {
-      const errorText = await chainResp.text();
-      console.error("[CHAIN DEBUG] Chaining request failed:\n", errorText);
-      return chainResponse; // fallback
+      if (!chainResp.ok) {
+        const errorText = await chainResp.text();
+        console.error("[CHAIN DEBUG] Chaining request failed:\n", errorText);
+        return chainResponse; // fallback to previous response
+      }
+
+      const chainData = await chainResp.json();
+      const newContent = chainData.choices?.[0]?.message?.content;
+
+      if (!newContent) {
+        console.warn("[CHAIN DEBUG] No content returned from chain. Stopping chaining.");
+        return chainResponse;
+      }
+
+      console.log("[CHAIN DEBUG] newAssistantContent from chain:", newContent);
+
+      conversationHistory.push({ role: "assistant", content: newContent });
+      chainResponse = newContent;
+    } catch (error: any) {
+      console.error("[ERROR] in chainIfNeeded:\n", error.message);
+      return "An error occurred while processing the chaining request. Please try again.";
     }
-
-    const chainData = await chainResp.json();
-    const newContent = chainData.choices?.[0]?.message?.content;
-
-    if (!newContent) {
-      console.warn("[CHAIN DEBUG] No content returned from chain. Stopping chaining.");
-      return chainResponse;
-    }
-
-    console.log("[CHAIN DEBUG] newAssistantContent from chain:", newContent);
-
-    conversationHistory.push({ role: "assistant", content: newContent });
-    chainResponse = newContent;
   }
 
   console.log("[CHAIN DEBUG] Next prompt is NOT chaining. Stopping chain here.");
   return chainResponse;
 }
+
 
 // ---------------------------------------------------------------------------------
 // 5) Auto-TransitionHidden Helper Function (Encapsulated)
@@ -367,47 +335,64 @@ async function handleAutoTransitionHidden(
 }> {
   console.log("[AUTO-HIDDEN] Starting auto-transition hidden process...");
 
+  // Check if the API key is available
+  if (!process.env.GROQ_API_KEY) {
+    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
+    return {
+      conversationHistory: convHistory,
+      response: "Please enter your GROQ API key.",
+      updatedIndex: idx,
+    };
+  }
+
+  // Append a silent acknowledgment from the user
   convHistory.push({ role: "user", content: "OK" });
-  console.log("[AUTO-HIDDEN] user 'OK' appended, but we won't show it to the user in final text.");
+  console.log("[AUTO-HIDDEN] user 'OK' appended, but it won’t be shown to the user.");
 
   idx++;
   const nextPrompt = PROMPT_LIST[idx]?.prompt_text || "No further prompts.";
   console.log("[AUTO-HIDDEN] Next prompt text:", nextPrompt);
 
+  // Update system message
   convHistory = [
     { role: "system", content: nextPrompt },
     ...convHistory.filter((e) => e.role !== "system"),
   ];
 
-  const payload2 = {
-    model: "llama-3.1-8b-instant",
+  // Construct API request payload
+  const payload = {
+    model: "llama-3.3-70b-versatile",
     messages: convHistory,
   };
 
-  const autoResponse = await fetchApiResponseWithRetry(payload2, 2, 500);
+  // Fetch API response with retry logic
+  const autoResponse = await fetchApiResponseWithRetry(payload, 2, 500);
 
   if (!autoResponse) {
-    console.warn("[AUTO-HIDDEN] second LLM call returned no content.");
+    console.warn("[AUTO-HIDDEN] Second LLM call returned no content.");
     return { conversationHistory: convHistory, response: null, updatedIndex: idx };
   }
 
+  // Append assistant's response
   convHistory.push({ role: "assistant", content: autoResponse });
 
-  // **NEW DEBUG + IMPORTANT MEMORY CHECK**
-  console.log("[AUTO-HIDDEN DEBUG] Checking if this prompt requires important memory:", PROMPT_LIST[idx]?.important_memory);
-  
+  // **Debugging: Check if the prompt requires memory retention**
+  console.log(
+    "[AUTO-HIDDEN DEBUG] Checking if this prompt requires important memory:",
+    PROMPT_LIST[idx]?.important_memory
+  );
+
   if (PROMPT_LIST[idx]?.important_memory) {
     console.log("[AUTO-HIDDEN DEBUG] This prompt is marked as important. Inserting into memory.");
     
-    // **ACTUALLY INSERTING THE IMPORTANT MEMORY**
-    insertImportantMemory(autoResponse);
+    insertImportantMemory(autoResponse); // Store important response in memory
 
-    // **Debugging confirmation**
-    console.log("[DEBUG] Important_memory successfully inserted for this transition.");
+    console.log("[DEBUG] Important memory successfully inserted for this transition.");
   }
 
   return { conversationHistory: convHistory, response: autoResponse, updatedIndex: idx };
 }
+
 
 
 // ---------------------------------------------------------------------------------
@@ -423,42 +408,61 @@ async function handleAutoTransitionVisible(
 }> {
   console.log("[AUTO-VISIBLE] Starting auto-transition visible process...");
 
-  convHistory.push({ role: "user", content: "OK" });
-  console.log("[AUTO-VISIBLE] user 'OK' appended (visible).");
+  // Ensure API key exists before making a request
+  if (!process.env.GROQ_API_KEY) {
+    console.warn("[WARNING] Missing GROQ API Key. Request cannot proceed.");
+    return {
+      conversationHistory: convHistory,
+      response: "Please enter your Groq API Key to continue.",
+      updatedIndex: idx,
+    };
+  }
 
+  // Append user confirmation (visible transition)
+  convHistory.push({ role: "user", content: "OK" });
+  console.log("[AUTO-VISIBLE] User 'OK' appended (visible).");
+
+  // Move to the next prompt
   idx++;
   const nextPrompt = PROMPT_LIST[idx]?.prompt_text || "No further prompts.";
   console.log("[AUTO-VISIBLE] Next prompt text:", nextPrompt);
 
+  // Update conversation history with new system prompt
   convHistory = [
     { role: "system", content: nextPrompt },
     ...convHistory.filter((e) => e.role !== "system"),
   ];
 
+  // Prepare payload for the API request
   const payload2 = {
-    model: "llama-3.1-8b-instant",
+    model: "llama-3.3-70b-versatile",
     messages: convHistory,
   };
 
+  // Fetch API response with retry logic
   const autoResponse = await fetchApiResponseWithRetry(payload2, 2, 500);
 
+  // Handle cases where the API fails to return content
   if (!autoResponse) {
-    console.warn("[AUTO-VISIBLE] second LLM call returned no content.");
+    console.warn("[AUTO-VISIBLE] Second LLM call returned no content.");
     return { conversationHistory: convHistory, response: null, updatedIndex: idx };
   }
 
+  // Append assistant response to the conversation
   convHistory.push({ role: "assistant", content: autoResponse });
 
-  // **NEW DEBUG + IMPORTANT MEMORY CHECK**
-  console.log("[AUTO-VISIBLE DEBUG] Checking if this prompt requires important memory:", PROMPT_LIST[idx]?.important_memory);
-  
+  // **Check for important memory**
+  console.log(
+    "[AUTO-VISIBLE DEBUG] Checking if this prompt requires important memory:",
+    PROMPT_LIST[idx]?.important_memory
+  );
+
   if (PROMPT_LIST[idx]?.important_memory) {
     console.log("[AUTO-VISIBLE DEBUG] This prompt is marked as important. Inserting into memory.");
     
-    // **ACTUALLY INSERTING THE IMPORTANT MEMORY**
+    // Insert important memory
     insertImportantMemory(autoResponse);
 
-    // **Debugging confirmation**
     console.log("[DEBUG] Important_memory successfully inserted for this transition.");
   }
 
@@ -580,7 +584,7 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
 
     // 6) Build LLM payload
     const mainPayload = {
-      model: "llama-3.1-8b-instant",
+      model: "llama-3.3-70b-versatile",
       temperature: 0,
       messages: conversationHistory,
     };
@@ -735,7 +739,7 @@ async function handleStreamingFlow(incomingMessage: string): Promise<Response> {
 
   // Build streaming payload
   const payload = {
-    model: "llama-3.1-8b-instant",
+    model: "llama-3.3-70b-versatile",
     temperature: 0,
     stream: true, // <--- important
     messages: conversationHistory,
