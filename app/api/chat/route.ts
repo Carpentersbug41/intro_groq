@@ -14,6 +14,9 @@ let conversationHistory: { role: string; content: string }[] = [];
 let currentIndex = 0;
 
 
+// ----------------
+
+
 
 
 // ---------------------------------------------------------------------------------
