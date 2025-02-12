@@ -1,19 +1,41 @@
 import PROMPT_LIST from "./prompts"; // Correct path
 import { NextRequest, NextResponse } from "next/server";
-import {
-  defaultValidationInstruction,
-  customValidationInstructionForList,
-  customValidationInstructionForQuestion,
-} from "./validationInstructions";
 
-export const runtime = "nodejs";
+export const runtime = "edge";
 
 const BUFFER_SIZE = 6;
 
 let conversationHistory: { role: string; content: string }[] = [];
 let currentIndex = 0;
 
+// ---------------------------------------------------------------------------------
+// Define validation instructions (only once)
+// ---------------------------------------------------------------------------------
+const defaultValidationInstruction = `
+  You are a validation assistant.
+  Your task is to assess if the user's input answers the question.
 
+  if the user chooses an option, it is VALID. If user choose an option, it is INVALID.
+  Current prompt: '{CURRENT_PROMPT}'
+  User input: '{USER_INPUT}'
+
+  Respond with only one word: "VALID" if the user chooses an option,
+  or "INVALID" if the user doesn't choose an option.
+  Do not provide any additional explanation or description.
+`;
+
+const customValidationInstructionForList = `
+  You are a validation assistant.
+  Your task is to assess if the user has answered 'red'. 
+  As long as the user has answered 'red', it is VALID. 
+  If not, it is INVALID.
+  Current prompt: '{CURRENT_PROMPT}'
+  User input: '{USER_INPUT}'
+
+  Respond with only one word: "VALID" if the user has answered 'red',
+  or "INVALID" if they have not.
+  Do not provide any additional explanation or description.
+`;
 
 
 // ---------------------------------------------------------------------------------
@@ -578,7 +600,7 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
     // 6) Build LLM payload
     const mainPayload = {
       model: "llama-3.3-70b-versatile",
-      temperature: PROMPT_LIST[currentIndex]?.temperature ?? 0, // Use prompt-specific temperature if provided
+      temperature: 0,
       messages: conversationHistory,
     };
     console.log("[DEBUG] Main Payload to LLM:\n", JSON.stringify(mainPayload, null, 2));

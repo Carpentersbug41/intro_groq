@@ -10,7 +10,7 @@ type Message = {
   content: string;
 };
 
-export function ChatWindow(props: {
+export function ChatWindow2(props: {
   endpoint: string;
   placeholder?: string;
   titleText?: string;
@@ -33,7 +33,7 @@ export function ChatWindow(props: {
 
   const messageContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Load API key from localStorage on mount
+  // Load API Key from localStorage on mount
   useEffect(() => {
     const savedKey = localStorage.getItem("groq_api_key") || "";
     console.log("✅ Frontend stored API key on mount:", savedKey);
@@ -95,8 +95,7 @@ export function ChatWindow(props: {
       if (!res.ok) {
         let errorDetails: any;
         try {
-          // Clone the response so we can safely read it
-          errorDetails = await res.clone().json();
+          errorDetails = await res.json();
         } catch {
           errorDetails = await res.text();
         }
@@ -131,7 +130,7 @@ export function ChatWindow(props: {
       : "bg-gray-100 text-gray-800 self-start";
 
     return (
-      <div key={index} className={`p-3 mb-2 rounded-md ${bubbleClasses}`}>
+      <div key={index} className={`p-3 rounded-md ${bubbleClasses}`}>
         {isUser ? (
           <p>{msg.content}</p>
         ) : (
@@ -168,7 +167,9 @@ export function ChatWindow(props: {
           placeholder="Enter your Groq API key"
           value={apiKey}
           onChange={handleApiKeyChange}
-          className={`w-full p-2 border rounded-md ${isApiKeyValid ? "border-gray-300" : "border-red-500"}`}
+          className={`w-full p-2 border rounded-md ${
+            isApiKeyValid ? "border-gray-300" : "border-red-500"
+          }`}
         />
         {!isApiKeyValid && (
           <p className="text-red-500 text-sm mt-1">
@@ -186,12 +187,16 @@ export function ChatWindow(props: {
         </div>
       ) : (
         <>
+          {/* 
+            The key is min-h and max-h. 
+            Enough to avoid collapsing, but not too big. 
+          */}
           <div
             ref={messageContainerRef}
             className="flex flex-col mb-3 p-2 space-y-2 overflow-auto border border-gray-200 rounded-md"
             style={{
-              minHeight: "600px",
-              maxHeight: "600px",
+              minHeight: "600px", // ensures there's some space even if empty
+              maxHeight: "600px", // doesn't get too large
             }}
           >
             {messages.length === 0 && emptyStateComponent

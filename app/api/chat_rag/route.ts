@@ -1,19 +1,94 @@
 import PROMPT_LIST from "./prompts"; // Correct path
 import { NextRequest, NextResponse } from "next/server";
-import {
-  defaultValidationInstruction,
-  customValidationInstructionForList,
-  customValidationInstructionForQuestion,
-} from "./validationInstructions";
+
+import fs from "fs";
+import path from "path";
+import { OpenAI } from "openai";
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export const runtime = "nodejs";
 
-const BUFFER_SIZE = 6;
+
+const BUFFER_SIZE = 8;
 
 let conversationHistory: { role: string; content: string }[] = [];
 let currentIndex = 0;
 
+// ---------------------------------------------------------------------------------
+// Define validation instructions (only once)
+// ---------------------------------------------------------------------------------
+const defaultValidationInstruction = `
+  You are a validation assistant.
+  Your task is to assess if the user's input answers the question.
 
+  if the user chooses an option, it is VALID. If user choose an option, it is INVALID.
+  Current prompt: '{CURRENT_PROMPT}'
+  User input: '{USER_INPUT}'
+
+  Respond with only one word: "VALID" if the user chooses an option,
+  or "INVALID" if the user doesn't choose an option.
+  Do not provide any additional explanation or description.
+`;
+
+const customValidationInstructionForList = `
+  You are a validation assistant.
+  Your task is to assess if the user has answered 'red'. 
+  As long as the user has answered 'red', it is VALID. 
+  If not, it is INVALID.
+  Current prompt: '{CURRENT_PROMPT}'
+  User input: '{USER_INPUT}'
+
+  Respond with only one word: "VALID" if the user has answered 'red',
+  or "INVALID" if they have not.
+  Do not provide any additional explanation or description.
+`;
+
+// Load your embeddings.json once
+const embeddingsData = JSON.parse(
+  fs.readFileSync(path.join(process.cwd(), "data", "embeddings.json"), "utf-8")
+);
+
+// Cosine similarity
+function cosineSimilarity(vecA: number[], vecB: number[]) {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < vecA.length; i++) {
+    dot += vecA[i] * vecB[i];
+    normA += vecA[i] ** 2;
+    normB += vecB[i] ** 2;
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+// Convert user query to embedding
+async function getQueryEmbedding(query: string) {
+  // Make sure your OPENAI_API_KEY is set
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("Missing OPENAI_API_KEY for retrieval");
+  }
+  const response = await openai.embeddings.create({
+    model: "text-embedding-ada-002",
+    input: query,
+  });
+  return response.data[0].embedding;
+}
+
+// Retrieve best chunk
+async function retrieveBestChunk(query: string) {
+  const queryEmbedding = await getQueryEmbedding(query);
+
+  let bestMatch = null;
+  let bestScore = -Infinity;
+
+  for (const item of embeddingsData) {
+    const score = cosineSimilarity(queryEmbedding, item.embedding);
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = item;
+    }
+  }
+  return bestMatch; // { id, text, embedding }
+}
 
 
 // ---------------------------------------------------------------------------------
@@ -531,6 +606,11 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
       { role: "system", content: currentPrompt },
       ...conversationHistory.filter((entry) => entry.role !== "system"),
     ];
+
+
+
+
+
     console.log(
       "[DEBUG] Updated Conversation History (System Prompt First):\n",
       JSON.stringify(conversationHistory, null, 2)
@@ -567,21 +647,52 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
     }
 
     // 5) Overwrite system with the new prompt
-    const newPrompt = PROMPT_LIST[currentIndex]?.prompt_text || "No further prompts.";
-    console.log("[DEBUG] Next Prompt is now:", newPrompt);
+   // 5) Overwrite system with the new prompt
+const newPrompt = PROMPT_LIST[currentIndex]?.prompt_text || "No further prompts.";
+console.log("[DEBUG] Next Prompt is now:", newPrompt);
 
-    conversationHistory = [
-      { role: "system", content: newPrompt },
-      ...conversationHistory.filter((entry) => entry.role !== "system"),
-    ];
+conversationHistory = [
+  { role: "system", content: newPrompt },
+  ...conversationHistory.filter((entry) => entry.role !== "system"),
+];
 
-    // 6) Build LLM payload
-    const mainPayload = {
-      model: "llama-3.3-70b-versatile",
-      temperature: PROMPT_LIST[currentIndex]?.temperature ?? 0, // Use prompt-specific temperature if provided
-      messages: conversationHistory,
-    };
-    console.log("[DEBUG] Main Payload to LLM:\n", JSON.stringify(mainPayload, null, 2));
+// [RAG START] -----------------------------------------------------------
+// 1) Combine previous assistant response (if available) with the user's message
+const previousAssistant = conversationHistory
+  .filter(msg => msg.role === "assistant")
+  .slice(-1)[0]?.content || "";
+const combinedQuery = `${previousAssistant} ${userMessage}`.trim();
+
+console.log("[RAG] Retrieving best chunk for combined query:", combinedQuery);
+
+let bestChunkText = "";
+try {
+  const bestChunk = await retrieveBestChunk(combinedQuery);
+  if (bestChunk) {
+    bestChunkText = bestChunk.text;
+    console.log("[RAG] Best chunk found:", bestChunk.id);
+  } else {
+    console.log("[RAG] No best chunk found (embeddingsData might be empty).");
+  }
+} catch (err) {
+  console.error("[RAG] Error retrieving chunk:", err);
+}
+
+// 2) Append chunk text to the system prompt as "Context"
+conversationHistory[0].content =
+  conversationHistory[0].content + "\n\nContext:\n" + bestChunkText;
+// [RAG END] ------------------------------------------------------------
+
+
+// 6) Build LLM payload
+const mainPayload = {
+  model: "llama-3.3-70b-versatile",
+  temperature: 0,
+  messages: conversationHistory,
+};
+console.log("[DEBUG] Main Payload to LLM:\n", JSON.stringify(mainPayload, null, 2));
+
+// (Then your existing code that fetches from Groq, processes response, etc.)
 
     const mainResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",

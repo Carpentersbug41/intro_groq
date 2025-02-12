@@ -1,19 +1,41 @@
 import PROMPT_LIST from "./prompts"; // Correct path
 import { NextRequest, NextResponse } from "next/server";
-import {
-  defaultValidationInstruction,
-  customValidationInstructionForList,
-  customValidationInstructionForQuestion,
-} from "./validationInstructions";
 
-export const runtime = "nodejs";
+export const runtime = "edge";
 
 const BUFFER_SIZE = 6;
 
 let conversationHistory: { role: string; content: string }[] = [];
 let currentIndex = 0;
 
+// ---------------------------------------------------------------------------------
+// Define validation instructions (only once)
+// ---------------------------------------------------------------------------------
+const defaultValidationInstruction = `
+  You are a validation assistant.
+  Your task is to assess if the user's input answers the question.
 
+  if the user answers the question, it is VALID. If user doesn't answer the question, it is INVALID.
+  Current prompt: '{CURRENT_PROMPT}'
+  User input: '{USER_INPUT}'
+
+  Respond with only one word: "VALID" if the user inputs answers appropriately,
+  or "INVALID" if not.
+  Do not provide any additional explanation or description.
+`;
+
+const customValidationInstructionForList = `
+  You are a validation assistant.
+  Your task is to assess if the user has answered 'red'. 
+  As long as the user has answered 'red', it is VALID. 
+  If not, it is INVALID.
+  Current prompt: '{CURRENT_PROMPT}'
+  User input: '{USER_INPUT}'
+
+  Respond with only one word: "VALID" if the user has answered 'red',
+  or "INVALID" if they have not.
+  Do not provide any additional explanation or description.
+`;
 
 
 // ---------------------------------------------------------------------------------
@@ -450,22 +472,11 @@ async function handleAutoTransitionVisible(
 // ---------------------------------------------------------------------------------
 // 6) MAIN POST HANDLER (WITH OPTIONAL VALIDATION CHECK + BUFFER MANAGEMENT + AUTO-TRANSITION)
 // ---------------------------------------------------------------------------------
-// ---------------------------------------------------------------------------------
-// 6) MAIN POST HANDLER (WITH OPTIONAL VALIDATION CHECK + BUFFER MANAGEMENT + AUTO-TRANSITION)
-// ---------------------------------------------------------------------------------
-
 export async function POST(req: NextRequest) {
   // Check if body.stream is set
   let body: any;
   try {
     body = await req.json();
-
-    // NEW: Debug logs + storing the API Key in the environment
-    console.log("✅ Backend received API Key:", body.apiKey);
-    console.log("📥 Received Payload:", JSON.stringify(body, null, 2));
-
-    // Set the API key on the server side (if needed globally)
-    process.env.GROQ_API_KEY = body.apiKey || process.env.GROQ_API_KEY;
   } catch (err) {
     return new Response("No input received. Please try again.", { status: 400 });
   }
@@ -474,13 +485,10 @@ export async function POST(req: NextRequest) {
   if (body.stream === true) {
     return handleStreamingFlow(body.message);
   } else {
-    // Else, do the existing "non-streaming" logic (original logic)
+    // Else, do the existing "non-streaming" logic
     return handleNonStreamingFlow(body.message);
   }
 }
-
-
-
 
 
 /**
@@ -578,7 +586,7 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
     // 6) Build LLM payload
     const mainPayload = {
       model: "llama-3.3-70b-versatile",
-      temperature: PROMPT_LIST[currentIndex]?.temperature ?? 0, // Use prompt-specific temperature if provided
+      temperature: 0,
       messages: conversationHistory,
     };
     console.log("[DEBUG] Main Payload to LLM:\n", JSON.stringify(mainPayload, null, 2));
