@@ -1,4 +1,5 @@
-import PROMPT_LIST from "./prompts"; // ✅ Use direct path instead of `@/`
+import PROMPT_LIST from "@/app/api/chat_rag/prompts";
+
 
 
 
@@ -7,6 +8,9 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { OpenAI } from "openai";
+
+console.log("FILES IN DIRECTORY:", fs.readdirSync(__dirname));
+
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
