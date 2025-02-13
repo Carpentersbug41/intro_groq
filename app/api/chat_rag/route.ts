@@ -9,10 +9,7 @@ import fs from "fs";
 import path from "path";
 import { OpenAI } from "openai";
 
-// Log current directory contents
 console.log("FILES IN DIRECTORY:", fs.readdirSync(__dirname).join(", "));
-
-// Log absolute path
 console.log("ABSOLUTE PATH:", path.resolve(__dirname, "prompts.ts"));
 
 
