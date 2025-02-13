@@ -9,7 +9,11 @@ import fs from "fs";
 import path from "path";
 import { OpenAI } from "openai";
 
-console.log("FILES IN DIRECTORY:", fs.readdirSync(__dirname));
+// Log current directory contents
+console.log("FILES IN DIRECTORY:", fs.readdirSync(__dirname).join(", "));
+
+// Log absolute path
+console.log("ABSOLUTE PATH:", path.resolve(__dirname, "prompts.ts"));
 
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
