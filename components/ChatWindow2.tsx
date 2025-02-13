@@ -147,18 +147,17 @@ export function ChatWindow2(props: {
         <h2 className="text-xl font-semibold">{titleText}</h2>
       </div>
 
-      {/* Optional YouTube Video */}
-      {videoId && (
-        <div className="mb-3 w-full h-48 border border-gray-300 rounded-md overflow-hidden">
-          <iframe
-            width="100%"
-            height="100%"
-            src={`https://www.youtube.com/embed/${videoId}`}
-            frameBorder="0"
-            allowFullScreen
-          />
-        </div>
-      )}
+{/* Optional YouTube Video */}
+{videoId && (
+  <div className="mb-3 w-full relative" style={{ paddingTop: "56.25%" }}>
+    <iframe
+      className="absolute top-0 left-0 w-full h-full"
+      src={`https://www.youtube.com/embed/${videoId}`}
+      frameBorder="0"
+      allowFullScreen
+    />
+  </div>
+)}
 
       {/* API Key Input */}
       <div className="mb-3">

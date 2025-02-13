@@ -25,13 +25,13 @@ export default function ChatIELTSPage() {
   return (
     <div>
       {/* First Chatbot */}
-      <ChatWindow
+      {/* <ChatWindow
         endpoint="/api/chat" // ✅ This remains the original chatbot
         titleText="IELTS Introduction Assistant"
         placeholder="Enter your IELTS Part 2 introduction..."
         emptyStateComponent={InfoCard}
         videoId="zGM30-iAoZA"
-      />
+      /> */}
 
       {/* Second Chatbot */}
       <ChatWindow2
@@ -39,7 +39,7 @@ export default function ChatIELTSPage() {
         titleText="IELTS RAG Chatbot"
         placeholder="Enter your IELTS query..."
         emptyStateComponent={InfoCard}
-        videoId="zGM30-iAoZA"
+        videoId="3nATWi4lCO4"
       />
     </div>
   );

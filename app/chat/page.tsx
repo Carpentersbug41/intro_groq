@@ -33,14 +33,8 @@ export default function ChatIELTSPage() {
         videoId="zGM30-iAoZA"
       />
 
-      {/* Second Chatbot */}
-      <ChatWindow2
-        endpoint="/api/chat_rag" // ✅ The new chatbot connects to `chat_rag`
-        titleText="IELTS RAG Chatbot"
-        placeholder="Enter your IELTS query..."
-        emptyStateComponent={InfoCard}
-        videoId="zGM30-iAoZA"
-      />
+    
+      
     </div>
   );
 }
