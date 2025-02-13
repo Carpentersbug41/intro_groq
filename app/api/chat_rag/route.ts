@@ -1,4 +1,7 @@
-import PROMPT_LIST from "./prompts"; // Correct path
+import PROMPT_LIST from "./prompts"; // ✅ Use direct path instead of `@/`
+
+
+
 import { NextRequest, NextResponse } from "next/server";
 
 import fs from "fs";
