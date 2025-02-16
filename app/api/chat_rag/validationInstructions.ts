@@ -3,14 +3,14 @@
 // ---------------------------------------------------------------------------------
 export const defaultValidationInstruction = `
   You are a validation assistant.
-  Your task is to assess if the user's input answers the request.
+  Your task is to assess if the user's input answers the question.
 
-  if the user answers the request, it is VALID. If user doesn't answer properly, it is INVALID.
+  if the user chooses an option, it is VALID. If user choose an option, it is INVALID.
   Current prompt: '{CURRENT_PROMPT}'
   User input: '{USER_INPUT}'
 
-  Respond with only one word: "VALID" if the user answers the question appropriately,
-  or "INVALID" if the user doesn't answer the question appropriately.
+  Respond with only one word: "VALID" if the user chooses an option,
+  or "INVALID" if the user doesn't choose an option.
   Do not provide any additional explanation or description.
 `;
 

@@ -652,38 +652,38 @@ export const PROMPT_LIST = [
 
 // // //  chaining: true
 // //   },
-// //   {
-// //     prompt_text: `#System message:
-// // Ask the user what their favorite type of music is.`,
-// //     // autoTransition: true,
-// //     important_memory: true,
-// //   },
-//   {
-//     prompt_text: "#System message:\n Ask the user to input a number. ",
-//     // chaining: true, // Enable chaining
-//   },
+  {
+    prompt_text: `#System message:
+Ask the user what their favorite type of music is.`,
+    // autoTransition: true,
+    important_memory: true,
+  },
+  {
+    prompt_text: "#System message:\n Ask the user to input a number. ",
+    // chaining: true, // Enable chaining
+  },
 
-//   {
-//     prompt_text: "#System message:\n Add 2 to the number. ",
-//     chaining: true, // Enable chaining
-//   },
-//   {
-//     prompt_text: "#System message:\n Take the result of the last operation and multiply it by 3. ",
-//     chaining: true, // Enable chaining
-//   },
-//   {
-//     prompt_text: "#System message:\n Convert the result into cats.  For example 'there are 5 cats.'",
-//     chaining: true, // Enable chaining
-//   },
-//   {
-//     prompt_text: "#System message:\n Add a colour to the cats.  Give them all the samer colour. For example 'There are 5 red cats.'",
-//     chaining: true, // Enable chaining
-//   },
-//   {
-//     prompt_text: "#System message:\n Output the final result to the user and end the conversation.",
-//     chaining: false, // Disable chaining for final prompt
-//     important_memory: true,
-//   },
+  {
+    prompt_text: "#System message:\n Add 2 to the number. ",
+    chaining: true, // Enable chaining
+  },
+  {
+    prompt_text: "#System message:\n Take the result of the last operation and multiply it by 3. ",
+    chaining: true, // Enable chaining
+  },
+  {
+    prompt_text: "#System message:\n Convert the result into cats.  For example 'there are 5 cats.'",
+    chaining: true, // Enable chaining
+  },
+  {
+    prompt_text: "#System message:\n Add a colour to the cats.  Give them all the samer colour. For example 'There are 5 red cats.'",
+    chaining: true, // Enable chaining
+  },
+  {
+    prompt_text: "#System message:\n Output the final result to the user and end the conversation.",
+    chaining: false, // Disable chaining for final prompt
+    important_memory: true,
+  },
 //   {
 //     prompt_text: `#System message:
 // Ask the user what their favorite type of dream is.`,

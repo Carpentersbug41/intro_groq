@@ -207,7 +207,7 @@ export function ChatWindow(props: {
               onChange={(e) => setInput(e.target.value)}
               placeholder={placeholder}
               className="flex-grow p-2 mr-2 border border-gray-300 rounded-md"
-              disabled={!apiKey.trim() || isSubmitting}
+              disabled={!apiKey.trim()}
             />
             <button
               type="submit"

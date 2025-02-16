@@ -76,7 +76,57 @@ async function validateInput(
     return "An error occurred while validating input. Please try again.";
   }
 }
+/**********************************************************************************************
+ * BEGIN ROLLBACK FUNCTION: RollbackOnValidationFailure
+ * 
+ * This helper function checks if the current prompt (at the given currentIndex)
+ * has a fallback property (fallbackIndex). If it does, it "rolls back" the currentIndex
+ * by subtracting fallbackIndex (ensuring the index doesn't go below 0).
+ *
+ * To enable rollback on validation failure, you can uncomment the indicated block in your 
+ * validation failure branch in handleNonStreamingFlow.
+ **********************************************************************************************/
+function RollbackOnValidationFailure(currentIndex: number): number {
+  const fallbackIndex = PROMPT_LIST[currentIndex]?.fallbackIndex;
+  if (fallbackIndex !== undefined) {
+    const newIndex = Math.max(0, currentIndex - fallbackIndex);
+    console.log(
+      `[ROLLBACK DEBUG] Rolling back currentIndex from ${currentIndex} by ${fallbackIndex} to ${newIndex}`
+    );
+    return newIndex;
+  }
+  console.log(
+    `[ROLLBACK DEBUG] No fallbackIndex property found for currentIndex ${currentIndex}. No rollback applied.`
+  );
+  return currentIndex;
+}
+/**********************************************************************************************
+ * END ROLLBACK FUNCTION
+ **********************************************************************************************/
 
+/**********************************************************************************************
+ * BEGIN MODEL OVERRIDE FUNCTION: getModelForCurrentPrompt
+ * 
+ * This helper function checks if the prompt at the given index has a custom "model" property.
+ * If so, it returns that custom model; otherwise, it returns the default model "llama-3.3-70b-versatile".
+ * 
+ * Extra debug logs are added so you can see which model is being used.
+ **********************************************************************************************/
+function getModelForCurrentPrompt(index: number): string {
+  const prompt = PROMPT_LIST[index];
+  console.log(`[MODEL DEBUG] Prompt at index ${index}:`, prompt);
+  if (prompt && (prompt as any).model) {
+    const customModel = (prompt as any).model;
+    console.log(`[MODEL DEBUG] Custom model found at index ${index}: ${customModel}`);
+    return customModel;
+  }
+  console.log(`[MODEL DEBUG] No custom model at index ${index}. Using default model: llama-3.3-70b-versatile`);
+  return "llama-3.3-70b-versatile";
+}
+
+/**********************************************************************************************
+ * END MODEL OVERRIDE FUNCTION
+ **********************************************************************************************/
 
 // ---------------------------------------------------------------------------------
 // 2) RETRY MESSAGE GENERATOR IF INVALID (DO NOT MODIFY THIS SECTION)
@@ -298,8 +348,20 @@ async function chainIfNeeded(assistantContent: string): Promise<string | null> {
     }
   }
 
+    // DEBUG ADDED: Log the current index and the last chained prompt’s properties.
+console.log("[CHAIN DEBUG] Finished chaining. Current index after chaining:", currentIndex);
+if (currentIndex > 0) {
+  console.log(
+    "[CHAIN DEBUG] Last chained prompt (index " + (currentIndex - 1) + ") properties:",
+    JSON.stringify(PROMPT_LIST[currentIndex - 1])
+  );
+}
+
   console.log("[CHAIN DEBUG] Next prompt is NOT chaining. Stopping chain here.");
   return chainResponse;
+
+
+
 }
 
 
@@ -315,6 +377,9 @@ async function handleAutoTransitionHidden(
   updatedIndex: number;
 }> {
   console.log("[AUTO-HIDDEN] Starting auto-transition hidden process...");
+  // DEBUG ADDED: Log current index and prompt details for hidden auto-transition.
+console.log("[DEBUG - AUTO-HIDDEN] At currentIndex:", currentIndex, "Prompt details:", JSON.stringify(PROMPT_LIST[currentIndex]));
+
 
   // Check if the API key is available
   if (!process.env.GROQ_API_KEY) {
@@ -342,9 +407,12 @@ async function handleAutoTransitionHidden(
 
   // Construct API request payload
   const payload = {
-    model: "llama-3.3-70b-versatile",
+    model: getModelForCurrentPrompt(idx),
     messages: convHistory,
   };
+  
+  
+  
 
   // Fetch API response with retry logic
   const autoResponse = await fetchApiResponseWithRetry(payload, 2, 500);
@@ -416,9 +484,10 @@ async function handleAutoTransitionVisible(
 
   // Prepare payload for the API request
   const payload2 = {
-    model: "llama-3.3-70b-versatile",
+    model: getModelForCurrentPrompt(idx),
     messages: convHistory,
   };
+  
 
   // Fetch API response with retry logic
   const autoResponse = await fetchApiResponseWithRetry(payload2, 2, 500);
@@ -555,13 +624,31 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
         typeof promptValidation === "string" ? promptValidation : undefined;
 
       const isValid = await validateInput(userMessage, currentPrompt, customValidation);
+      // ------------------------------------------------------------------------- 
+
       if (!isValid) {
         console.log("[INFO] Validation Failed. Retrying the Same Prompt.");
-        const retryMsg = await generateRetryMessage(userMessage, currentPrompt);
+      
+        // ***** BEGIN ROLLBACK INTEGRATION *****
+        console.log("[ROLLBACK] Checking for rollback property on current prompt...");
+        currentIndex = RollbackOnValidationFailure(currentIndex);
+        const newPrompt = PROMPT_LIST[currentIndex]?.prompt_text || "No further prompts.";
+        console.log("[ROLLBACK] Rolled back. New prompt is now:", newPrompt);
+      
+        // Update conversation history with the rolled back system prompt
+        conversationHistory = [
+          { role: "system", content: newPrompt },
+          ...conversationHistory.filter((entry) => entry.role !== "system"),
+        ];
+        // ***** END ROLLBACK INTEGRATION *****
+      
+        const retryMsg = await generateRetryMessage(userMessage, newPrompt);
         conversationHistory.push({ role: "assistant", content: retryMsg });
         conversationHistory = manageBuffer(conversationHistory);
         return new Response(retryMsg, { status: 200 });
       }
+
+      // -------------------------------------------------------------------
       console.log("[INFO] Validation Succeeded. Now incrementing currentIndex...");
       currentIndex++; // Increment after successful validation
     } else {
@@ -578,12 +665,16 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
       ...conversationHistory.filter((entry) => entry.role !== "system"),
     ];
 
+    // ------------------------------------------------------------------------
     // 6) Build LLM payload
     const mainPayload = {
-      model: "llama-3.3-70b-versatile",
-      temperature: PROMPT_LIST[currentIndex]?.temperature ?? 0, // Use prompt-specific temperature if provided
+      model: getModelForCurrentPrompt(currentIndex),
+      temperature: PROMPT_LIST[currentIndex]?.temperature ?? 0,
       messages: conversationHistory,
     };
+    
+    // ----------------------------------------------------------------------------
+    
     console.log("[DEBUG] Main Payload to LLM:\n", JSON.stringify(mainPayload, null, 2));
 
     const mainResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -627,8 +718,46 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
 
     // 9) Possibly chain
     let finalChained: string | null = null;
+    let lastChainedIndex = -1;  // <--- ADDED
+
     if (PROMPT_LIST[currentIndex]?.chaining) {
-      finalChained = await chainIfNeeded(assistantContent1);
+      const chainResponse = await chainIfNeeded(assistantContent1);
+      finalChained = chainResponse;
+      
+      // <--- ADDED: store the last used prompt index
+      lastChainedIndex = currentIndex - 1;
+
+      // DEBUG ADDED: Log the current index and the final chained result.
+      console.log("[DEBUG] After chainIfNeeded, currentIndex is:", currentIndex, "and finalChained is:", finalChained);
+    }
+
+    // <--- ADDED BLOCK: Check if the prompt we just chained has autoTransitionVisible
+    if (lastChainedIndex >= 0) {
+      const lastChainedPrompt = PROMPT_LIST[lastChainedIndex];
+      if (lastChainedPrompt?.autoTransitionVisible) {
+        console.log("[DEBUG] The last chained prompt had autoTransitionVisible. Handling it immediately...");
+
+        let combinedVisible = finalChained || assistantContent1;
+
+        // Call your existing helper with the *last* prompt index
+        const { conversationHistory: updatedConv, response: autoResponse, updatedIndex } =
+          await handleAutoTransitionVisible(conversationHistory, lastChainedIndex);
+
+        // Update conversation & index
+        conversationHistory = updatedConv;
+        currentIndex = updatedIndex;
+
+        // If the LLM returned nothing, just return what we have so far
+        if (!autoResponse) {
+          console.log("[DEBUG] Final text returned to user (no autoResponse found):", combinedVisible);
+          return new Response(combinedVisible || "", { status: 200 });
+        }
+
+        // Otherwise append it
+        combinedVisible += "\n\n" + autoResponse;
+        console.log("[DEBUG] Final text returned to user after chained auto-transition:", combinedVisible);
+        return new Response(combinedVisible, { status: 200 });
+      }
     }
 
     // 10) Auto-Transition Hidden
@@ -670,6 +799,9 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
 
     // 11) Auto-Transition Visible
     if (PROMPT_LIST[currentIndex]?.autoTransitionVisible) {
+      console.log("[DEBUG - AUTO-VISIBLE] Before auto-transition loop, currentIndex:", currentIndex, 
+        "Current prompt details:", JSON.stringify(PROMPT_LIST[currentIndex]));
+
       console.log("[DEBUG - AUTO-VISIBLE] autoTransitionVisible = true. Entering loop...");
 
       let combinedVisible = finalChained || assistantContent1;
@@ -699,7 +831,6 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
     // 12) If no auto-transition, just return final
     console.log("[DEBUG] Final text returned to user:", finalChained || assistantContent1);
     return new Response(finalChained || assistantContent1, { status: 200 });
-
   } catch (error: any) {
     console.error("[ERROR] in POST handler:\n", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });

@@ -1,6 +1,10 @@
 import PROMPT_LIST from "@/app/api/chat_rag/prompts";
 
-
+import {
+  defaultValidationInstruction,
+  customValidationInstructionForList,
+  customValidationInstructionForQuestion,
+} from "./validationInstructions";
 
 
 import { NextRequest, NextResponse } from "next/server";
@@ -26,31 +30,7 @@ let currentIndex = 0;
 // ---------------------------------------------------------------------------------
 // Define validation instructions (only once)
 // ---------------------------------------------------------------------------------
-const defaultValidationInstruction = `
-  You are a validation assistant.
-  Your task is to assess if the user's input answers the question.
 
-  if the user chooses an option, it is VALID. If user choose an option, it is INVALID.
-  Current prompt: '{CURRENT_PROMPT}'
-  User input: '{USER_INPUT}'
-
-  Respond with only one word: "VALID" if the user chooses an option,
-  or "INVALID" if the user doesn't choose an option.
-  Do not provide any additional explanation or description.
-`;
-
-const customValidationInstructionForList = `
-  You are a validation assistant.
-  Your task is to assess if the user has answered 'red'. 
-  As long as the user has answered 'red', it is VALID. 
-  If not, it is INVALID.
-  Current prompt: '{CURRENT_PROMPT}'
-  User input: '{USER_INPUT}'
-
-  Respond with only one word: "VALID" if the user has answered 'red',
-  or "INVALID" if they have not.
-  Do not provide any additional explanation or description.
-`;
 
 // Load your embeddings.json once
 const embeddingsData = JSON.parse(
@@ -156,6 +136,60 @@ async function validateInput(
     return "An error occurred while validating input. Please try again.";
   }
 }
+
+
+/**********************************************************************************************
+ * BEGIN ROLLBACK FUNCTION: RollbackOnValidationFailure
+ * 
+ * This helper function checks if the current prompt (at the given currentIndex)
+ * has a fallback property (fallbackIndex). If it does, it "rolls back" the currentIndex
+ * by subtracting fallbackIndex (ensuring the index doesn't go below 0).
+ *
+ * To enable rollback on validation failure, you can uncomment the indicated block in your 
+ * validation failure branch in handleNonStreamingFlow.
+ **********************************************************************************************/
+function RollbackOnValidationFailure(currentIndex: number): number {
+  const fallbackIndex = PROMPT_LIST[currentIndex]?.fallbackIndex;
+  if (fallbackIndex !== undefined) {
+    const newIndex = Math.max(0, currentIndex - fallbackIndex);
+    console.log(
+      `[ROLLBACK DEBUG] Rolling back currentIndex from ${currentIndex} by ${fallbackIndex} to ${newIndex}`
+    );
+    return newIndex;
+  }
+  console.log(
+    `[ROLLBACK DEBUG] No fallbackIndex property found for currentIndex ${currentIndex}. No rollback applied.`
+  );
+  return currentIndex;
+}
+/**********************************************************************************************
+ * END ROLLBACK FUNCTION
+ **********************************************************************************************/
+
+/**********************************************************************************************
+ * BEGIN MODEL OVERRIDE FUNCTION: getModelForCurrentPrompt
+ * 
+ * This helper function checks if the prompt at the given index has a custom "model" property.
+ * If so, it returns that custom model; otherwise, it returns the default model "llama-3.3-70b-versatile".
+ * 
+ * Extra debug logs are added so you can see which model is being used.
+ **********************************************************************************************/
+function getModelForCurrentPrompt(index: number): string {
+  const prompt = PROMPT_LIST[index];
+  console.log(`[MODEL DEBUG] Prompt at index ${index}:`, prompt);
+  if (prompt && (prompt as any).model) {
+    const customModel = (prompt as any).model;
+    console.log(`[MODEL DEBUG] Custom model found at index ${index}: ${customModel}`);
+    return customModel;
+  }
+  console.log(`[MODEL DEBUG] No custom model at index ${index}. Using default model: llama-3.3-70b-versatile`);
+  return "llama-3.3-70b-versatile";
+}
+
+/**********************************************************************************************
+ * END MODEL OVERRIDE FUNCTION
+ **********************************************************************************************/
+
 
 
 // ---------------------------------------------------------------------------------
@@ -422,9 +456,10 @@ async function handleAutoTransitionHidden(
 
   // Construct API request payload
   const payload = {
-    model: "llama-3.3-70b-versatile",
+    model: getModelForCurrentPrompt(idx),
     messages: convHistory,
   };
+  
 
   // Fetch API response with retry logic
   const autoResponse = await fetchApiResponseWithRetry(payload, 2, 500);
@@ -496,9 +531,10 @@ async function handleAutoTransitionVisible(
 
   // Prepare payload for the API request
   const payload2 = {
-    model: "llama-3.3-70b-versatile",
+    model: getModelForCurrentPrompt(idx),
     messages: convHistory,
   };
+  
 
   // Fetch API response with retry logic
   const autoResponse = await fetchApiResponseWithRetry(payload2, 2, 500);
@@ -572,6 +608,8 @@ export async function POST(req: NextRequest) {
  *  (all original code is here, unmodified except we moved it into a function).
  * ---------------------------------------------------------------------------------
  */
+
+
 /******************************************
  * handleNonStreamingFlow (With Added Debugs)
  ******************************************/
@@ -615,10 +653,6 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
       ...conversationHistory.filter((entry) => entry.role !== "system"),
     ];
 
-
-
-
-
     console.log(
       "[DEBUG] Updated Conversation History (System Prompt First):\n",
       JSON.stringify(conversationHistory, null, 2)
@@ -640,13 +674,30 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
         typeof promptValidation === "string" ? promptValidation : undefined;
 
       const isValid = await validateInput(userMessage, currentPrompt, customValidation);
+      
+      // --------------------------------------------------------------
       if (!isValid) {
         console.log("[INFO] Validation Failed. Retrying the Same Prompt.");
-        const retryMsg = await generateRetryMessage(userMessage, currentPrompt);
+
+        // ***** BEGIN ROLLBACK INTEGRATION *****
+        console.log("[ROLLBACK] Checking for rollback property on current prompt...");
+        currentIndex = RollbackOnValidationFailure(currentIndex);
+        const newPrompt = PROMPT_LIST[currentIndex]?.prompt_text || "No further prompts.";
+        console.log("[ROLLBACK] Rolled back. New prompt is now:", newPrompt);
+
+        // Update conversation history with the rolled back system prompt
+        conversationHistory = [
+          { role: "system", content: newPrompt },
+          ...conversationHistory.filter((entry) => entry.role !== "system"),
+        ];
+        // ***** END ROLLBACK INTEGRATION *****
+
+        const retryMsg = await generateRetryMessage(userMessage, newPrompt);
         conversationHistory.push({ role: "assistant", content: retryMsg });
         conversationHistory = manageBuffer(conversationHistory);
         return new Response(retryMsg, { status: 200 });
       }
+      // -------------------------------------------------------------------
       console.log("[INFO] Validation Succeeded. Now incrementing currentIndex...");
       currentIndex++; // Increment after successful validation
     } else {
@@ -655,52 +706,54 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
     }
 
     // 5) Overwrite system with the new prompt
-   // 5) Overwrite system with the new prompt
-const newPrompt = PROMPT_LIST[currentIndex]?.prompt_text || "No further prompts.";
-console.log("[DEBUG] Next Prompt is now:", newPrompt);
+    const newPrompt = PROMPT_LIST[currentIndex]?.prompt_text || "No further prompts.";
+    console.log("[DEBUG] Next Prompt is now:", newPrompt);
 
-conversationHistory = [
-  { role: "system", content: newPrompt },
-  ...conversationHistory.filter((entry) => entry.role !== "system"),
-];
+    conversationHistory = [
+      { role: "system", content: newPrompt },
+      ...conversationHistory.filter((entry) => entry.role !== "system"),
+    ];
 
-// [RAG START] -----------------------------------------------------------
-// 1) Combine previous assistant response (if available) with the user's message
-const previousAssistant = conversationHistory
-  .filter(msg => msg.role === "assistant")
-  .slice(-1)[0]?.content || "";
-const combinedQuery = `${previousAssistant} ${userMessage}`.trim();
+    // [RAG START] -----------------------------------------------------------
+    // 1) Combine previous assistant response (if available) with the user's message
+    const previousAssistant = conversationHistory
+      .filter(msg => msg.role === "assistant")
+      .slice(-1)[0]?.content || "";
+    const combinedQuery = `${previousAssistant} ${userMessage}`.trim();
 
-console.log("[RAG] Retrieving best chunk for combined query:", combinedQuery);
+    console.log("[RAG] Retrieving best chunk for combined query:", combinedQuery);
 
-let bestChunkText = "";
-try {
-  const bestChunk = await retrieveBestChunk(combinedQuery);
-  if (bestChunk) {
-    bestChunkText = bestChunk.text;
-    console.log("[RAG] Best chunk found:", bestChunk.id);
-  } else {
-    console.log("[RAG] No best chunk found (embeddingsData might be empty).");
-  }
-} catch (err) {
-  console.error("[RAG] Error retrieving chunk:", err);
-}
+    let bestChunkText = "";
+    try {
+      const bestChunk = await retrieveBestChunk(combinedQuery);
+      if (bestChunk) {
+        bestChunkText = bestChunk.text;
+        console.log("[RAG] Best chunk found:", bestChunk.id);
+      } else {
+        console.log("[RAG] No best chunk found (embeddingsData might be empty).");
+      }
+    } catch (err) {
+      console.error("[RAG] Error retrieving chunk:", err);
+    }
 
-// 2) Append chunk text to the system prompt as "Context"
-conversationHistory[0].content =
-  conversationHistory[0].content + "\n\nContext:\n" + bestChunkText;
-// [RAG END] ------------------------------------------------------------
+    // 2) Append chunk text to the system prompt as "Context"
+    conversationHistory[0].content =
+      conversationHistory[0].content + "\n\nContext:\n" + bestChunkText;
+    // [RAG END] ------------------------------------------------------------
 
+    // --------------------------------------------------------------
+    // Changed to custom model
+    // 6) Build LLM payload
+    const mainPayload = {
+      model: getModelForCurrentPrompt(currentIndex),
+      temperature: PROMPT_LIST[currentIndex]?.temperature ?? 0,
+      messages: conversationHistory,
+    };
+    // -------------------------------------------------------
 
-// 6) Build LLM payload
-const mainPayload = {
-  model: "llama-3.3-70b-versatile",
-  temperature: 0,
-  messages: conversationHistory,
-};
-console.log("[DEBUG] Main Payload to LLM:\n", JSON.stringify(mainPayload, null, 2));
+    console.log("[DEBUG] Main Payload to LLM:\n", JSON.stringify(mainPayload, null, 2));
 
-// (Then your existing code that fetches from Groq, processes response, etc.)
+    // (Then your existing code that fetches from Groq, processes response, etc.)
 
     const mainResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -743,9 +796,45 @@ console.log("[DEBUG] Main Payload to LLM:\n", JSON.stringify(mainPayload, null, 
 
     // 9) Possibly chain
     let finalChained: string | null = null;
+    let lastChainedIndex = -1;  // <--- ADDED: to track last chained prompt index
     if (PROMPT_LIST[currentIndex]?.chaining) {
-      finalChained = await chainIfNeeded(assistantContent1);
+      const chainResponse = await chainIfNeeded(assistantContent1);
+      finalChained = chainResponse;
+      
+      // <--- ADDED: store the last used prompt index
+      lastChainedIndex = currentIndex - 1;
+      
+      // DEBUG ADDED: Log the current index and the final chained result.
+      console.log("[DEBUG] After chainIfNeeded, currentIndex is:", currentIndex, "and finalChained is:", finalChained);
     }
+
+    // <--- ADDED BLOCK: Check if the prompt we just chained has autoTransitionVisible
+    if (lastChainedIndex >= 0) {
+      const lastChainedPrompt = PROMPT_LIST[lastChainedIndex];
+      if (lastChainedPrompt?.autoTransitionVisible) {
+        console.log("[DEBUG] The last chained prompt had autoTransitionVisible. Handling it immediately...");
+        
+        let combinedVisible = finalChained || assistantContent1;
+        
+        // Call your existing helper with the *last* prompt index
+        const { conversationHistory: updatedConv, response: autoResponse, updatedIndex } =
+          await handleAutoTransitionVisible(conversationHistory, lastChainedIndex);
+        
+        // Update conversation & index
+        conversationHistory = updatedConv;
+        currentIndex = updatedIndex;
+        
+        if (!autoResponse) {
+          console.log("[DEBUG] Final text returned to user (no autoResponse found):", combinedVisible);
+          return new Response(combinedVisible || "", { status: 200 });
+        }
+        
+        combinedVisible += "\n\n" + autoResponse;
+        console.log("[DEBUG] Final text returned to user after chained auto-transition:", combinedVisible);
+        return new Response(combinedVisible, { status: 200 });
+      }
+    }
+    // --------------------------------------------------------------
 
     // 10) Auto-Transition Hidden
     if (PROMPT_LIST[currentIndex]?.autoTransitionHidden) {
@@ -821,7 +910,6 @@ console.log("[DEBUG] Main Payload to LLM:\n", JSON.stringify(mainPayload, null, 
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
-
 
 /******************************************
  * handleStreamingFlow (No Changes)

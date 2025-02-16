@@ -1,13 +1,15 @@
-// export const PROMPT_LIST = [
+import { customValidationInstructionForList } from "./validationInstructions";
 
-type PromptType = {
-  prompt_text: string;
-  validation?: boolean;
-  important_memory?: boolean;
-  autoTransitionHidden?: boolean;
-  autoTransitionVisible?: boolean;
-  chaining?: boolean; // ✅ Add this line
-};
+interface Prompt {
+   prompt_text: string;
+   chaining: boolean;
+   validation?: boolean | string;
+   important_memory?: boolean;
+   autoTransitionHidden?: boolean;
+   autoTransitionVisible?: boolean;
+   fallbackIndex?: number; // <-- add this optional property
+ }
+ 
 
 
 export const PROMPT_LIST = [
@@ -64,7 +66,8 @@ export const PROMPT_LIST = [
 #step 3: Always give the user feedback on the previous response.  If they got the question wrong tell tehm the answer.
     `,
         // ...
-        chaining: false,
+         chaining: false,
+
       },
       {
         prompt_text: `#System message:
@@ -79,6 +82,8 @@ export const PROMPT_LIST = [
    #step 3: Always give the user feedback on the previous response.  If they got the question wrong tell tehm the answer.
     `,
         chaining: false,
+        validation: customValidationInstructionForList,
+        fallbackIndex: 2,  // Only used if validation fails
       },
       {
         prompt_text: `#System message:
