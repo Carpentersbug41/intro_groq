@@ -1,5 +1,5 @@
 
-import { customValidationInstructionForQuestion } from "./validationInstructions";
+import { customValidationInstructionForQuestion, customValidationInstructionForOption } from "./validationInstructions";
 
 type PromptType = {
   prompt_text: string;
@@ -14,11 +14,18 @@ type PromptType = {
 
 export const PROMPT_LIST = [
 
-    
+
+
+
+   {
+      prompt_text: `#System message:
+  Ask the user what their favorite type of music is.`,
+      // autoTransition: true,
+      important_memory: true,
+    },
     {
       prompt_text: "#System message:\n Ask the user to input a number. ",
       // chaining: true, // Enable chaining
-      validation: true,
     },
   
     {
@@ -37,35 +44,20 @@ export const PROMPT_LIST = [
       prompt_text: "#System message:\n Add a colour to the cats.  Give them all the samer colour. For example 'There are 5 red cats.'",
       chaining: true, // Enable chaining
       autoTransitionVisible: true,
-
     },
-    { prompt_text: "Ask the user what their favorite type of music is.",
 
-
-     
+    {
+      prompt_text: `#System message:
+  Ask the user what their favorite colour is.
+  
+  Always follow these steps:
+  
+  Step 1: Only sask the user what their favourite colour is.
+  Step 2:  Never ask anything else or add extra information`,
+      // autoTransition: true,
+      validation: true,
+      fallbackIndex: 3,
     },
-    { prompt_text: "Ask the user what their favorite colour is.", 
-      important_memory: true, 
-      autoTransitionHidden: true,  },
-
-      {
-         prompt_text: `#System message:
-     Ask the user what their favorite dish is.`,
-
-    
-    //  chaining: true
-       },
-       {
-         prompt_text: `#System message:
-     Ask the user what their favorite type of music is.`,
-
-       },
-       {
-         prompt_text: `#System message:
-     Ask the user what their favorite animal is.`,
-    
-     
-       },
 
  
 
@@ -99,7 +91,7 @@ export const PROMPT_LIST = [
     - Do not add explanations or extra information.  
     - Do not modify the question format.  
     `,
-    validation: true,
+    validation: customValidationInstructionForOption,
     chaining: false,
     
     },
@@ -445,7 +437,7 @@ export const PROMPT_LIST = [
 
 
      // validation: customValidationInstructionForQuestion,
-  fallbackIndex: 5,  // Only used if validation fails
+  fallbackIndex: 6,  // Only used if validation fails
 //   model: "llama3-8b-8192", // custom model for this prompt
 
  }
@@ -1365,3 +1357,39 @@ Your goal is to help the user **use grammatically accurate, varied, and fluent s
 
 
 export default PROMPT_LIST;
+   // {
+   //    prompt_text: "#System message:\n Ask the user to input a number. ",
+   //    // chaining: true, // Enable chaining
+   //    validation: true,
+   //  },
+ 
+   //  { prompt_text: "Ask the user what their favorite type of music is.",
+
+
+     
+   //  },
+   //  { prompt_text: "Ask the user what their favorite colour is.", 
+
+   //    validation: true,
+
+   //    fallbackIndex: 1,
+   // },
+
+   //    {
+   //       prompt_text: `#System message:
+   //   Ask the user what their favorite dish is.`,
+
+    
+   //  //  chaining: true
+   //     },
+   //     {
+   //       prompt_text: `#System message:
+   //   Ask the user what their favorite type of book is.`,
+
+   //     },
+   //     {
+   //       prompt_text: `#System message:
+   //   Ask the user what their favorite animal is.`,
+    
+     
+   //     },

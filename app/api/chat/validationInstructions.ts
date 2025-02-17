@@ -39,3 +39,18 @@ export const customValidationInstructionForQuestion = `
   or "INVALID" if they have not.
   Do not provide any additional explanation or description.
 `;
+
+
+export const customValidationInstructionForOption = `
+
+  You are a validation assistant.
+  Your task is to assess if the user chooses an option from the provided options.
+
+  if the user chooses an option, it is VALID. If user doesn't choose an option from the provided options, it is INVALID.
+  Current prompt: '{CURRENT_PROMPT}'
+  User input: '{USER_INPUT}'
+
+  Respond with only one word: "VALID" if the user chooses an option from the provided options,
+  or "INVALID" If user doesn't choose an option from the provided options.
+  Do not provide any additional explanation or description.
+`;

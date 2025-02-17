@@ -8,7 +8,7 @@ import {
 
 export const runtime = "nodejs";
 
-const BUFFER_SIZE = 6;
+const BUFFER_SIZE = 12;
 
 let conversationHistory: { role: string; content: string }[] = [];
 let currentIndex = 0;
@@ -626,27 +626,83 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
       const isValid = await validateInput(userMessage, currentPrompt, customValidation);
       // ------------------------------------------------------------------------- 
 
+
       if (!isValid) {
         console.log("[INFO] Validation Failed. Retrying the Same Prompt.");
-      
+    
         // ***** BEGIN ROLLBACK INTEGRATION *****
         console.log("[ROLLBACK] Checking for rollback property on current prompt...");
         currentIndex = RollbackOnValidationFailure(currentIndex);
         const newPrompt = PROMPT_LIST[currentIndex]?.prompt_text || "No further prompts.";
         console.log("[ROLLBACK] Rolled back. New prompt is now:", newPrompt);
-      
-        // Update conversation history with the rolled back system prompt
-        conversationHistory = [
-          { role: "system", content: newPrompt },
-          ...conversationHistory.filter((entry) => entry.role !== "system"),
-        ];
         // ***** END ROLLBACK INTEGRATION *****
-      
+    
         const retryMsg = await generateRetryMessage(userMessage, newPrompt);
+    
+        // ***** BEGIN FALLBACK CHAINING CHECK *****
+        if (PROMPT_LIST[currentIndex]?.chaining) {
+          console.log("[FALLBACK CHAIN] Fallback prompt has chaining enabled. Chaining retry message...");
+          // Call chainIfNeeded, which appends the chained response to conversationHistory
+          const chainedRetryMsg = await chainIfNeeded(retryMsg);
+          console.log("[FALLBACK CHAIN] Chained retry message:", chainedRetryMsg);
+          // DO NOT push the chained message again, as chainIfNeeded already updated conversationHistory.
+          conversationHistory = manageBuffer(conversationHistory);
+    
+          /* ***********************************************
+           * NEW BLOCK: Check if the last chained prompt had
+           * autoTransitionVisible or autoTransitionHidden
+           *********************************************** */
+          // Because chainIfNeeded updates `currentIndex` by the time it finishes,
+          // we look at the prompt that was just chained (currentIndex - 1).
+          const lastPromptIndex = currentIndex - 1;
+          if (lastPromptIndex >= 0) {
+            const lastPrompt = PROMPT_LIST[lastPromptIndex];
+            if (lastPrompt?.autoTransitionVisible) {
+              console.log("[FALLBACK CHAIN] The last chained prompt had autoTransitionVisible. Handling it now...");
+              let combinedVisible = chainedRetryMsg || "";
+              const { conversationHistory: updatedConv, response: autoResp, updatedIndex } =
+                await handleAutoTransitionVisible(conversationHistory, lastPromptIndex);
+    
+              conversationHistory = updatedConv;
+              currentIndex = updatedIndex;
+    
+              if (!autoResp) {
+                console.log("[FALLBACK CHAIN] Final text returned to user (no autoResponse found):", combinedVisible);
+                return new Response(combinedVisible, { status: 200 });
+              }
+    
+              combinedVisible += "\n\n" + autoResp;
+              console.log("[FALLBACK CHAIN] Final text returned to user after chained auto-transition:", combinedVisible);
+              return new Response(combinedVisible, { status: 200 });
+            } else if (lastPrompt?.autoTransitionHidden) {
+              console.log("[FALLBACK CHAIN] The last chained prompt had autoTransitionHidden. Handling it now...");
+              let fallbackHidden = chainedRetryMsg || "";
+              const { conversationHistory: updatedConv, response: autoResp, updatedIndex } =
+                await handleAutoTransitionHidden(conversationHistory, lastPromptIndex);
+    
+              conversationHistory = updatedConv;
+              currentIndex = updatedIndex;
+    
+              if (!autoResp) {
+                return new Response(fallbackHidden, { status: 200 });
+              }
+              console.log("[FALLBACK CHAIN] Final text after hidden transition:", autoResp);
+              return new Response(autoResp, { status: 200 });
+            }
+          }
+          /* ***********************************************
+           * END NEW BLOCK
+           *********************************************** */
+    
+          return new Response(chainedRetryMsg, { status: 200 });
+        }
+        // ***** END FALLBACK CHAINING CHECK *****
+    
         conversationHistory.push({ role: "assistant", content: retryMsg });
         conversationHistory = manageBuffer(conversationHistory);
         return new Response(retryMsg, { status: 200 });
       }
+      
 
       // -------------------------------------------------------------------
       console.log("[INFO] Validation Succeeded. Now incrementing currentIndex...");
@@ -702,63 +758,76 @@ async function handleNonStreamingFlow(incomingMessage: string): Promise<Response
      *********************************************/
     console.log("[DEBUG] assistantContent1 from LLM:", assistantContent1);
 
-    // 7) Add new assistant content to conversation history
-    conversationHistory.push({ role: "assistant", content: assistantContent1 });
-    console.log("[DEBUG] First API Response Added to Conversation History.");
+// 7) Add new assistant content to conversation history
+conversationHistory.push({ role: "assistant", content: assistantContent1 });
+console.log("[DEBUG] First API Response Added to Conversation History.");
 
-    // ***** START ADDED CODE *****
-    // Use the rule: if the prompt we just completed (currentIndex - 2) is marked as important_memory, insert important memory.
-    if (currentIndex - 0 >= 0 && PROMPT_LIST[currentIndex - 0]?.important_memory) {
-      insertImportantMemory(assistantContent1);
+// ***** START ADDED CODE *****
+// Use the rule: if the prompt we just completed (currentIndex - 2) is marked as important_memory, insert important memory.
+if (currentIndex - 0 >= 0 && PROMPT_LIST[currentIndex - 0]?.important_memory) {
+  insertImportantMemory(assistantContent1);
+}
+// ***** END ADDED CODE *****
+
+// 8) Manage buffer again
+conversationHistory = manageBuffer(conversationHistory);
+
+// 9) Possibly chain
+let finalChained: string | null = null;
+let lastChainedIndex = -1;  // <--- ADDED
+
+if (PROMPT_LIST[currentIndex]?.chaining) {
+  // Remove the previous assistant message that will be replaced by the chained output.
+  conversationHistory.pop();
+
+  // Store a deep clone of conversation history before chaining starts.
+  const preChainHistory = JSON.parse(JSON.stringify(conversationHistory));
+  
+  const chainResponse = await chainIfNeeded(assistantContent1);
+  finalChained = chainResponse;
+  
+  // Restore conversationHistory to its state before chaining.
+  conversationHistory = preChainHistory;
+  
+  // Append the final chain output as the assistant message.
+  conversationHistory.push({ role: "assistant", content: finalChained });
+  
+  // <--- ADDED: store the last used prompt index.
+  lastChainedIndex = currentIndex - 1;
+  
+  // DEBUG ADDED: Log the current index and the final chained result.
+  console.log("[DEBUG] After chainIfNeeded and cleanup, currentIndex is:", currentIndex, "and finalChained is:", finalChained);
+}
+
+// <--- ADDED BLOCK: Check if the prompt we just chained has autoTransitionVisible
+if (lastChainedIndex >= 0) {
+  const lastChainedPrompt = PROMPT_LIST[lastChainedIndex];
+  if (lastChainedPrompt?.autoTransitionVisible) {
+    console.log("[DEBUG] The last chained prompt had autoTransitionVisible. Handling it immediately...");
+
+    let combinedVisible = finalChained || assistantContent1;
+
+    // Call your existing helper with the *last* prompt index
+    const { conversationHistory: updatedConv, response: autoResponse, updatedIndex } =
+      await handleAutoTransitionVisible(conversationHistory, lastChainedIndex);
+
+    // Update conversation & index
+    conversationHistory = updatedConv;
+    currentIndex = updatedIndex;
+
+    // If the LLM returned nothing, just return what we have so far
+    if (!autoResponse) {
+      console.log("[DEBUG] Final text returned to user (no autoResponse found):", combinedVisible);
+      return new Response(combinedVisible || "", { status: 200 });
     }
-    // ***** END ADDED CODE *****
 
-    // 8) Manage buffer again
-    conversationHistory = manageBuffer(conversationHistory);
+    // Otherwise append it
+    combinedVisible += "\n\n" + autoResponse;
+    console.log("[DEBUG] Final text returned to user after chained auto-transition:", combinedVisible);
+    return new Response(combinedVisible, { status: 200 });
+  }
+}
 
-    // 9) Possibly chain
-    let finalChained: string | null = null;
-    let lastChainedIndex = -1;  // <--- ADDED
-
-    if (PROMPT_LIST[currentIndex]?.chaining) {
-      const chainResponse = await chainIfNeeded(assistantContent1);
-      finalChained = chainResponse;
-      
-      // <--- ADDED: store the last used prompt index
-      lastChainedIndex = currentIndex - 1;
-
-      // DEBUG ADDED: Log the current index and the final chained result.
-      console.log("[DEBUG] After chainIfNeeded, currentIndex is:", currentIndex, "and finalChained is:", finalChained);
-    }
-
-    // <--- ADDED BLOCK: Check if the prompt we just chained has autoTransitionVisible
-    if (lastChainedIndex >= 0) {
-      const lastChainedPrompt = PROMPT_LIST[lastChainedIndex];
-      if (lastChainedPrompt?.autoTransitionVisible) {
-        console.log("[DEBUG] The last chained prompt had autoTransitionVisible. Handling it immediately...");
-
-        let combinedVisible = finalChained || assistantContent1;
-
-        // Call your existing helper with the *last* prompt index
-        const { conversationHistory: updatedConv, response: autoResponse, updatedIndex } =
-          await handleAutoTransitionVisible(conversationHistory, lastChainedIndex);
-
-        // Update conversation & index
-        conversationHistory = updatedConv;
-        currentIndex = updatedIndex;
-
-        // If the LLM returned nothing, just return what we have so far
-        if (!autoResponse) {
-          console.log("[DEBUG] Final text returned to user (no autoResponse found):", combinedVisible);
-          return new Response(combinedVisible || "", { status: 200 });
-        }
-
-        // Otherwise append it
-        combinedVisible += "\n\n" + autoResponse;
-        console.log("[DEBUG] Final text returned to user after chained auto-transition:", combinedVisible);
-        return new Response(combinedVisible, { status: 200 });
-      }
-    }
 
     // 10) Auto-Transition Hidden
     if (PROMPT_LIST[currentIndex]?.autoTransitionHidden) {
