@@ -1,1000 +1,693 @@
+// D:\vercel\intro_groq m6\app\api\chat\route.ts
+
 import PROMPT_LIST from "./prompts"; // Correct path
 import { NextRequest, NextResponse } from "next/server";
+// Import cookies directly
+import { cookies } from 'next/headers';
+
+import { handleDatabaseStorageIfNeeded } from "@/utils/databaseHelpers"; // Temporarily commented out // Re-enable import
+
 import {
-  defaultValidationInstruction,
-  customValidationInstructionForList,
-  customValidationInstructionForQuestion,
-} from "./validationInstructions";
+  validateInput,
+  generateRetryMessage,
+  fetchApiResponseWithRetry,
+  cleanLlmResponse
+} from './openaiApiUtils'; // Adjust path if needed
 
+import {
+  getModelForCurrentPrompt,
+  RollbackOnValidationFailure
+} from './promptUtils';
+
+import {
+  handleAutoTransitionHidden,
+  handleAutoTransitionVisible
+} from './autoTransitionUtils'; // Adjust path if needed
+
+import { chainIfNeeded } from './chainUtils';
+import {
+  injectNamedMemory,
+  updateDynamicBufferMemory,
+  saveUserInputToMemoryIfNeeded,   // <-- Added missing import
+  processAssistantResponseMemory, // <-- Added missing import
+  NamedMemory                     // <-- Type import (keep)
+} from './memoryUtils';
+
+import { manageBuffer } from './bufferUtils';
+// Import session functions (they now use cookies() internally again)
+// /* // Temporarily commented out // Re-enable imports
+import {
+  getSessionCookieData,
+  updateSessionCookieData,
+  // destroySession, // If needed
+  SessionCookieData // Import the type
+} from '@/lib/session';
+// */
+
+// --- Constants ---
+export const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
+export const DEFAULT_OPENAI_MODEL = "gpt-4o-mini-2024-07-18";
 export const runtime = "nodejs";
+export const BUFFER_SIZE = 8; // Default buffer size
 
-const BUFFER_SIZE = 12;
+// --- Force dynamic rendering ---
+export const dynamic = 'force-dynamic';
 
-let conversationHistory: { role: string; content: string }[] = [];
-let currentIndex = 0;
+// --- Interfaces ---
+type ConversationEntry = { role: string; content: string };
 
-
-// ----------------
-
-
-
-
-// ---------------------------------------------------------------------------------
-// 1) MINIMAL VALIDATION CALL (MODIFIED TO ACCEPT A CUSTOM VALIDATION INSTRUCTION)
-// ---------------------------------------------------------------------------------
-async function validateInput(
-  userInput: string,
-  currentPrompt: string,
-  customValidation?: string
-) {
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
-    return "Please enter your GROQ API key.";
-  }
-
-  let finalInstruction: string;
-  if (customValidation) {
-    finalInstruction = customValidation
-      .replace("{CURRENT_PROMPT}", currentPrompt)
-      .replace("{USER_INPUT}", userInput);
-  } else {
-    finalInstruction = defaultValidationInstruction
-      .replace("{CURRENT_PROMPT}", currentPrompt)
-      .replace("{USER_INPUT}", userInput);
-  }
-
-  console.log("\n[DEBUG] Validation Payload (Minimal):", { userInput, currentPrompt });
-
-  const payload = {
-    model: "llama-3.3-70b-versatile",
-    temperature: 0,
-    messages: [{ role: "system", content: finalInstruction }],
-  };
-
-  try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      console.error("[ERROR] Validation API call failed. Returning fallback message.");
-      return "There was an issue validating your input. Please try again.";
-    }
-
-    const responseData = await response.json();
-    const validationResult = responseData.choices?.[0]?.message?.content?.trim() || "INVALID";
-    console.log("[DEBUG] Validation Result:", validationResult);
-
-    return validationResult === "VALID";
-  } catch (error: any) {
-    console.error("[ERROR] Failed to validate input:", error.message);
-    return "An error occurred while validating input. Please try again.";
-  }
-}
-/**********************************************************************************************
- * BEGIN ROLLBACK FUNCTION: RollbackOnValidationFailure
- * 
- * This helper function checks if the current prompt (at the given currentIndex)
- * has a fallback property (fallbackIndex). If it does, it "rolls back" the currentIndex
- * by subtracting fallbackIndex (ensuring the index doesn't go below 0).
- *
- * To enable rollback on validation failure, you can uncomment the indicated block in your 
- * validation failure branch in handleNonStreamingFlow.
- **********************************************************************************************/
-function RollbackOnValidationFailure(currentIndex: number): number {
-  const fallbackIndex = PROMPT_LIST[currentIndex]?.fallbackIndex;
-  if (fallbackIndex !== undefined) {
-    const newIndex = Math.max(0, currentIndex - fallbackIndex);
-    console.log(
-      `[ROLLBACK DEBUG] Rolling back currentIndex from ${currentIndex} by ${fallbackIndex} to ${newIndex}`
-    );
-    return newIndex;
-  }
-  console.log(
-    `[ROLLBACK DEBUG] No fallbackIndex property found for currentIndex ${currentIndex}. No rollback applied.`
-  );
-  return currentIndex;
-}
-/**********************************************************************************************
- * END ROLLBACK FUNCTION
- **********************************************************************************************/
-
-/**********************************************************************************************
- * BEGIN MODEL OVERRIDE FUNCTION: getModelForCurrentPrompt
- * 
- * This helper function checks if the prompt at the given index has a custom "model" property.
- * If so, it returns that custom model; otherwise, it returns the default model "llama-3.3-70b-versatile".
- * 
- * Extra debug logs are added so you can see which model is being used.
- **********************************************************************************************/
-function getModelForCurrentPrompt(index: number): string {
-  const prompt = PROMPT_LIST[index];
-  console.log(`[MODEL DEBUG] Prompt at index ${index}:`, prompt);
-  if (prompt && (prompt as any).model) {
-    const customModel = (prompt as any).model;
-    console.log(`[MODEL DEBUG] Custom model found at index ${index}: ${customModel}`);
-    return customModel;
-  }
-  console.log(`[MODEL DEBUG] No custom model at index ${index}. Using default model: llama-3.3-70b-versatile`);
-  return "llama-3.3-70b-versatile";
+interface ChatRequestBody {
+    messages: ConversationEntry[];
+    stream?: boolean; // <-- Keep added optional stream property
 }
 
-/**********************************************************************************************
- * END MODEL OVERRIDE FUNCTION
- **********************************************************************************************/
-
-// ---------------------------------------------------------------------------------
-// 2) RETRY MESSAGE GENERATOR IF INVALID (DO NOT MODIFY THIS SECTION)
-// ---------------------------------------------------------------------------------
-async function generateRetryMessage(
-  userInput: string,
-  currentPrompt: string
-): Promise<string> {
-  console.log("\n[DEBUG] Generating Retry Message for invalid input:", userInput);
-
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
-    return "Please enter your GROQ API key.";
-  }
-
-  const payload = {
-    model: "llama-3.3-70b-versatile",
-    temperature: 0,
-    messages: [
-      { role: "system", content: currentPrompt },
-      ...conversationHistory.filter((entry) => entry.role !== "system"),
-    ],
-  };
-
-  try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      console.error("[ERROR] Retry API call failed. Returning fallback retry message.");
-      return "I didn't quite get that. Can you try rephrasing your answer?";
-    }
-
-    const responseData = await response.json();
-    const retryContent = responseData.choices?.[0]?.message?.content?.trim();
-
-    if (!retryContent) {
-      console.warn("[WARNING] No retry content returned. Using fallback message.");
-      return "Hmm, I still didn't understand. Can you clarify?";
-    }
-
-    console.log("[DEBUG] Retry Message Generated:\n", retryContent);
-    return retryContent;
-  } catch (error: any) {
-    console.error("[ERROR] Failed to generate retry message:", error.message);
-    return "Something went wrong. Please try again.";
-  }
+interface ConversationProcessingInput {
+  messagesFromClient: ConversationEntry[];
+  sessionData: SessionCookieData;
 }
 
-// ---------------------------------------------------------------------------------
-// 3) BASIC FETCH TO THE API (UNTOUCHED)
-// ---------------------------------------------------------------------------------
-async function fetchApiResponse(payload: any): Promise<string | null> {
-  console.log(
-    "\n[DEBUG] Basic fetchApiResponse call with payload:\n",
-    JSON.stringify(payload, null, 2)
-  );
-
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
-    return "Please enter your GROQ API key.";
-  }
-
-  try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("[ERROR] fetchApiResponse call failed:\n", errorText);
-      return "There was an issue with the API request. Please check your API key.";
-    }
-
-    const responseData = await response.json();
-    const responseContent = responseData.choices?.[0]?.message?.content?.trim();
-
-    if (!responseContent) {
-      console.warn("[WARNING] API response returned no content.");
-      return "I didn't get a response from the API. Please try again.";
-    }
-
-    return responseContent;
-  } catch (error: any) {
-    console.error("[ERROR] in fetchApiResponse:\n", error.message);
-    return "An error occurred while fetching the response. Please try again.";
-  }
+interface HandlerResult {
+    content: string | null;
+    updatedSessionData: Partial<SessionCookieData> | null;
 }
 
-
-// ---------------------------------------------------------------------------------
-// Helper: Fetch API Response with Retry Logic
-// ---------------------------------------------------------------------------------
-async function fetchApiResponseWithRetry(
-  payload: any,
-  retries = 2,
-  delayMs = 500
-): Promise<string | null> {
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
-    return "Please enter your GROQ API key.";
-  }
-
-  let attempt = 0;
-  while (attempt < retries) {
-    attempt++;
-    console.log(`[DEBUG] Retry Attempt: ${attempt}/${retries}`);
-
-    const response = await fetchApiResponse(payload);
-    if (response) return response;
-
-    console.warn(`[WARN] Attempt ${attempt} failed. Retrying in ${delayMs}ms...`);
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
-  }
-
-  return "The request failed after multiple attempts. Please try again later.";
-}
-
-// ---------------------------------------------------------------------------------
-// 4) chainIfNeeded LOGIC (UPDATED TO UPDATE THE SYSTEM PROMPT)
-// ---------------------------------------------------------------------------------
-async function chainIfNeeded(assistantContent: string): Promise<string | null> {
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
-    return "Please enter your GROQ API key.";
-  }
-
-  let chainResponse = assistantContent;
-
-  while (
-    currentIndex < PROMPT_LIST.length &&
-    PROMPT_LIST[currentIndex]?.chaining
-  ) {
-    const nextPrompt = PROMPT_LIST[currentIndex].prompt_text;
-
-    if (conversationHistory[0]?.content === nextPrompt) {
-      console.log("[CHAIN DEBUG] Skipping duplicate chaining prompt:\n", nextPrompt);
-      currentIndex++;
-      continue;
-    }
-
-    conversationHistory = conversationHistory.filter(
-      (entry) => entry.role !== "system"
-    );
-    conversationHistory.unshift({ role: "system", content: nextPrompt });
-    console.log("[CHAIN DEBUG] Updated system message for chaining:\n", nextPrompt);
-
-    // Append the last assistant output (the chainResponse) as a user message.
-    conversationHistory.push({ role: "user", content: chainResponse });
-
-    // Remove duplicate assistant responses
-    conversationHistory = conversationHistory.filter((entry, index, self) => {
-      if (entry.role !== "assistant") return true;
-      if (index < self.length - 1 && self[index + 1]?.role === "user") {
-        return self[index + 1].content !== entry.content;
-      }
-      return true;
-    });
-
-    console.log(
-      "[CHAIN DEBUG] conversationHistory AFTER removing duplicates:\n",
-      JSON.stringify(conversationHistory, null, 2)
-    );
-
-    const tempHistory = [...conversationHistory];
-    console.log(
-      "[CHAIN DEBUG] Next chaining payload to LLM:\n",
-      JSON.stringify(tempHistory, null, 2)
-    );
-
-    currentIndex++;
-
-    try {
-      const chainResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
-          temperature: 0,
-          messages: tempHistory,
-        }),
-      });
-
-      if (!chainResp.ok) {
-        const errorText = await chainResp.text();
-        console.error("[CHAIN DEBUG] Chaining request failed:\n", errorText);
-        return chainResponse; // fallback to previous response
-      }
-
-      const chainData = await chainResp.json();
-      const newContent = chainData.choices?.[0]?.message?.content;
-
-      if (!newContent) {
-        console.warn("[CHAIN DEBUG] No content returned from chain. Stopping chaining.");
-        return chainResponse;
-      }
-
-      console.log("[CHAIN DEBUG] newAssistantContent from chain:", newContent);
-
-      conversationHistory.push({ role: "assistant", content: newContent });
-      chainResponse = newContent;
-    } catch (error: any) {
-      console.error("[ERROR] in chainIfNeeded:\n", error.message);
-      return "An error occurred while processing the chaining request. Please try again.";
-    }
-  }
-
-    // DEBUG ADDED: Log the current index and the last chained prompt’s properties.
-console.log("[CHAIN DEBUG] Finished chaining. Current index after chaining:", currentIndex);
-if (currentIndex > 0) {
-  console.log(
-    "[CHAIN DEBUG] Last chained prompt (index " + (currentIndex - 1) + ") properties:",
-    JSON.stringify(PROMPT_LIST[currentIndex - 1])
-  );
-}
-
-  console.log("[CHAIN DEBUG] Next prompt is NOT chaining. Stopping chain here.");
-  return chainResponse;
-
-
-
-}
-
-
-// ---------------------------------------------------------------------------------
-// 5) Auto-TransitionHidden Helper Function (Encapsulated)
-// ---------------------------------------------------------------------------------
-async function handleAutoTransitionHidden(
-  convHistory: { role: string; content: string }[],
-  idx: number
-): Promise<{
-  conversationHistory: { role: string; content: string }[];
-  response: string | null;
-  updatedIndex: number;
-}> {
-  console.log("[AUTO-HIDDEN] Starting auto-transition hidden process...");
-  // DEBUG ADDED: Log current index and prompt details for hidden auto-transition.
-console.log("[DEBUG - AUTO-HIDDEN] At currentIndex:", currentIndex, "Prompt details:", JSON.stringify(PROMPT_LIST[currentIndex]));
-
-
-  // Check if the API key is available
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API key. Prompting user for input.");
-    return {
-      conversationHistory: convHistory,
-      response: "Please enter your GROQ API key.",
-      updatedIndex: idx,
-    };
-  }
-
-  // Append a silent acknowledgment from the user
-  convHistory.push({ role: "user", content: "OK" });
-  console.log("[AUTO-HIDDEN] user 'OK' appended, but it won’t be shown to the user.");
-
-  idx++;
-  const nextPrompt = PROMPT_LIST[idx]?.prompt_text || "No further prompts.";
-  console.log("[AUTO-HIDDEN] Next prompt text:", nextPrompt);
-
-  // Update system message
-  convHistory = [
-    { role: "system", content: nextPrompt },
-    ...convHistory.filter((e) => e.role !== "system"),
-  ];
-
-  // Construct API request payload
-  const payload = {
-    model: getModelForCurrentPrompt(idx),
-    messages: convHistory,
-  };
-  
-  
-  
-
-  // Fetch API response with retry logic
-  const autoResponse = await fetchApiResponseWithRetry(payload, 2, 500);
-
-  if (!autoResponse) {
-    console.warn("[AUTO-HIDDEN] Second LLM call returned no content.");
-    return { conversationHistory: convHistory, response: null, updatedIndex: idx };
-  }
-
-  // Append assistant's response
-  convHistory.push({ role: "assistant", content: autoResponse });
-
-  // **Debugging: Check if the prompt requires memory retention**
-  console.log(
-    "[AUTO-HIDDEN DEBUG] Checking if this prompt requires important memory:",
-    PROMPT_LIST[idx]?.important_memory
-  );
-
-  if (PROMPT_LIST[idx]?.important_memory) {
-    console.log("[AUTO-HIDDEN DEBUG] This prompt is marked as important. Inserting into memory.");
-    
-    insertImportantMemory(autoResponse); // Store important response in memory
-
-    console.log("[DEBUG] Important memory successfully inserted for this transition.");
-  }
-
-  return { conversationHistory: convHistory, response: autoResponse, updatedIndex: idx };
-}
-
-
-
-// ---------------------------------------------------------------------------------
-// 5b) Auto-TransitionVisible Helper Function (Encapsulated)
-// ---------------------------------------------------------------------------------
-async function handleAutoTransitionVisible(
-  convHistory: { role: string; content: string }[],
-  idx: number
-): Promise<{
-  conversationHistory: { role: string; content: string }[];
-  response: string | null;
-  updatedIndex: number;
-}> {
-  console.log("[AUTO-VISIBLE] Starting auto-transition visible process...");
-
-  // Ensure API key exists before making a request
-  if (!process.env.GROQ_API_KEY) {
-    console.warn("[WARNING] Missing GROQ API Key. Request cannot proceed.");
-    return {
-      conversationHistory: convHistory,
-      response: "Please enter your Groq API Key to continue.",
-      updatedIndex: idx,
-    };
-  }
-
-  // Append user confirmation (visible transition)
-  convHistory.push({ role: "user", content: "OK" });
-  console.log("[AUTO-VISIBLE] User 'OK' appended (visible).");
-
-  // Move to the next prompt
-  idx++;
-  const nextPrompt = PROMPT_LIST[idx]?.prompt_text || "No further prompts.";
-  console.log("[AUTO-VISIBLE] Next prompt text:", nextPrompt);
-
-  // Update conversation history with new system prompt
-  convHistory = [
-    { role: "system", content: nextPrompt },
-    ...convHistory.filter((e) => e.role !== "system"),
-  ];
-
-  // Prepare payload for the API request
-  const payload2 = {
-    model: getModelForCurrentPrompt(idx),
-    messages: convHistory,
-  };
-  
-
-  // Fetch API response with retry logic
-  const autoResponse = await fetchApiResponseWithRetry(payload2, 2, 500);
-
-  // Handle cases where the API fails to return content
-  if (!autoResponse) {
-    console.warn("[AUTO-VISIBLE] Second LLM call returned no content.");
-    return { conversationHistory: convHistory, response: null, updatedIndex: idx };
-  }
-
-  // Append assistant response to the conversation
-  convHistory.push({ role: "assistant", content: autoResponse });
-
-  // **Check for important memory**
-  console.log(
-    "[AUTO-VISIBLE DEBUG] Checking if this prompt requires important memory:",
-    PROMPT_LIST[idx]?.important_memory
-  );
-
-  if (PROMPT_LIST[idx]?.important_memory) {
-    console.log("[AUTO-VISIBLE DEBUG] This prompt is marked as important. Inserting into memory.");
-    
-    // Insert important memory
-    insertImportantMemory(autoResponse);
-
-    console.log("[DEBUG] Important_memory successfully inserted for this transition.");
-  }
-
-  return { conversationHistory: convHistory, response: autoResponse, updatedIndex: idx };
-}
-
-// ---------------------------------------------------------------------------------
-// 6) MAIN POST HANDLER (WITH OPTIONAL VALIDATION CHECK + BUFFER MANAGEMENT + AUTO-TRANSITION)
-// ---------------------------------------------------------------------------------
-// ---------------------------------------------------------------------------------
-// 6) MAIN POST HANDLER (WITH OPTIONAL VALIDATION CHECK + BUFFER MANAGEMENT + AUTO-TRANSITION)
-// ---------------------------------------------------------------------------------
-
+// --- MAIN POST Handler ---
 export async function POST(req: NextRequest) {
-  // Check if body.stream is set
-  let body: any;
+  // console.log("--- JEST TEST: POST HANDLER ENTERED ---"); // <-- REMOVED LOG
+
+  // --- Get Cookie Store Instance ---
+  const cookieStore = await cookies(); // <-- Try awaiting cookies()
+
+  // --- 1. Read Session Cookie Data ---
+  // Pass the cookieStore instance to the utility function
+  const sessionData = await getSessionCookieData(cookieStore); // <-- Pass cookieStore
+  // console.log("API Route Start - Initial Session Data from Cookie:", JSON.stringify(sessionData, null, 2));
+
+  // --- 2. Parse Body & Get History ---
+  let body: ChatRequestBody;
+  let messagesFromClient: ConversationEntry[];
   try {
     body = await req.json();
-
-    // NEW: Debug logs + storing the API Key in the environment
-    console.log("✅ Backend received API Key:", body.apiKey);
-    console.log("📥 Received Payload:", JSON.stringify(body, null, 2));
-
-    // Set the API key on the server side (if needed globally)
-    process.env.GROQ_API_KEY = body.apiKey || process.env.GROQ_API_KEY;
+    if (!body || !Array.isArray(body.messages)) {
+      // console.error("Error parsing request body: 'messages' array missing or invalid.", body);
+      return NextResponse.json({ message: "'messages' array is missing or invalid in request body." }, { status: 400 });
+    }
+    messagesFromClient = body.messages;
+    // console.log(`📥 Received Payload: ${messagesFromClient.length} messages.`);
+    if (messagesFromClient.length > 0) {
+        const lastMsg = messagesFromClient[messagesFromClient.length - 1];
+        // console.log(`   Last message (${lastMsg.role}): ${lastMsg.content.substring(0, 80)}...`);
+    }
   } catch (err) {
-    return new Response("No input received. Please try again.", { status: 400 });
+    // console.error("Error parsing request body:", err);
+    return NextResponse.json({ message: 'Invalid request body.' }, { status: 400 });
   }
 
-  // If stream === true, do SSE streaming
-  if (body.stream === true) {
-    return handleStreamingFlow(body.message);
-  } else {
-    // Else, do the existing "non-streaming" logic (original logic)
-    return handleNonStreamingFlow(body.message);
+  // --- API Key Check ---
+  if (!process.env.OPENAI_API_KEY) {
+     // console.error("[FATAL] Missing OPENAI_API_KEY environment variable.");
+     return NextResponse.json({ message: 'Server configuration error: Missing API Key.' }, { status: 500 });
   }
-}
 
-
-
-
-
-/**
- * ---------------------------------------------------------------------------------
- *  Handle the normal (non-streaming) flow EXACTLY as before
- *  (all original code is here, unmodified except we moved it into a function).
- * ---------------------------------------------------------------------------------
- */
-/******************************************
- * handleNonStreamingFlow (With Added Debugs)
- ******************************************/
-async function handleNonStreamingFlow(incomingMessage: string): Promise<Response> {
+  // --- Main Logic ---
   try {
-    const userMessage = incomingMessage?.trim();
+    let result: HandlerResult;
 
-    console.log("\n[INFO] Received User Input:", userMessage || "[No Input Provided]");
-    if (!userMessage) {
-      console.log("[WARN] No User Input Received. Returning Error.");
-      return new Response("No input received. Please try again.", { status: 400 });
-    }
-
-    // Capture the current prompt (do not capture the flag here)
-    const currentPrompt = PROMPT_LIST[currentIndex]?.prompt_text;
-    if (!currentPrompt) {
-      const finalMessage = "Thank you for your responses! Goodbye.";
-      conversationHistory.push({ role: "assistant", content: finalMessage });
-      console.log("[INFO] Conversation Complete. Final Message Sent.");
-      return new Response(finalMessage, { status: 200 });
-    }
-
-    // Figure out if the current prompt actually requires validation
-    const promptValidation = PROMPT_LIST[currentIndex]?.validation;
-    const promptValidationNeeded =
-      (typeof promptValidation === "boolean" && promptValidation === true) ||
-      (typeof promptValidation === "string");
-
-    const isAutoTransitionHidden = PROMPT_LIST[currentIndex]?.autoTransitionHidden || false;
-    const isAutoTransitionVisible = PROMPT_LIST[currentIndex]?.autoTransitionVisible || false;
-
-    console.log("\n[DEBUG] Current Prompt:\n", currentPrompt);
-    console.log("[DEBUG] Checking prompt validation property:", promptValidation);
-    console.log("[DEBUG] Validation needed?", promptValidationNeeded);
-    console.log("[DEBUG] AutoTransitionHidden Status:", isAutoTransitionHidden);
-    console.log("[DEBUG] AutoTransitionVisible Status:", isAutoTransitionVisible);
-
-    // 1) Insert the system prompt
-    conversationHistory = [
-      { role: "system", content: currentPrompt },
-      ...conversationHistory.filter((entry) => entry.role !== "system"),
-    ];
-    console.log(
-      "[DEBUG] Updated Conversation History (System Prompt First):\n",
-      JSON.stringify(conversationHistory, null, 2)
-    );
-
-    // 2) Add user message
-    conversationHistory.push({ role: "user", content: userMessage });
-    console.log("[DEBUG] Adding User Input to Conversation History.");
-
-    // 3) Manage buffer
-    conversationHistory = manageBuffer(conversationHistory);
-
-    // 4) If validation is needed, do it
-    if (promptValidationNeeded) {
-      console.log("[INFO] This prompt has validation: Checking user input now...");
-
-      // If it's a string => custom instructions
-      const customValidation =
-        typeof promptValidation === "string" ? promptValidation : undefined;
-
-      const isValid = await validateInput(userMessage, currentPrompt, customValidation);
-      // ------------------------------------------------------------------------- 
-
-
-      if (!isValid) {
-        console.log("[INFO] Validation Failed. Retrying the Same Prompt.");
-    
-        // ***** BEGIN ROLLBACK INTEGRATION *****
-        console.log("[ROLLBACK] Checking for rollback property on current prompt...");
-        currentIndex = RollbackOnValidationFailure(currentIndex);
-        const newPrompt = PROMPT_LIST[currentIndex]?.prompt_text || "No further prompts.";
-        console.log("[ROLLBACK] Rolled back. New prompt is now:", newPrompt);
-        // ***** END ROLLBACK INTEGRATION *****
-    
-        const retryMsg = await generateRetryMessage(userMessage, newPrompt);
-    
-        // ***** BEGIN FALLBACK CHAINING CHECK *****
-        if (PROMPT_LIST[currentIndex]?.chaining) {
-          console.log("[FALLBACK CHAIN] Fallback prompt has chaining enabled. Chaining retry message...");
-          // Call chainIfNeeded, which appends the chained response to conversationHistory
-          const chainedRetryMsg = await chainIfNeeded(retryMsg);
-          console.log("[FALLBACK CHAIN] Chained retry message:", chainedRetryMsg);
-          // DO NOT push the chained message again, as chainIfNeeded already updated conversationHistory.
-          conversationHistory = manageBuffer(conversationHistory);
-    
-          /* ***********************************************
-           * NEW BLOCK: Check if the last chained prompt had
-           * autoTransitionVisible or autoTransitionHidden
-           *********************************************** */
-          // Because chainIfNeeded updates `currentIndex` by the time it finishes,
-          // we look at the prompt that was just chained (currentIndex - 1).
-          const lastPromptIndex = currentIndex - 1;
-          if (lastPromptIndex >= 0) {
-            const lastPrompt = PROMPT_LIST[lastPromptIndex];
-            if (lastPrompt?.autoTransitionVisible) {
-              console.log("[FALLBACK CHAIN] The last chained prompt had autoTransitionVisible. Handling it now...");
-              let combinedVisible = chainedRetryMsg || "";
-              const { conversationHistory: updatedConv, response: autoResp, updatedIndex } =
-                await handleAutoTransitionVisible(conversationHistory, lastPromptIndex);
-    
-              conversationHistory = updatedConv;
-              currentIndex = updatedIndex;
-    
-              if (!autoResp) {
-                console.log("[FALLBACK CHAIN] Final text returned to user (no autoResponse found):", combinedVisible);
-                return new Response(combinedVisible, { status: 200 });
-              }
-    
-              combinedVisible += "\n\n" + autoResp;
-              console.log("[FALLBACK CHAIN] Final text returned to user after chained auto-transition:", combinedVisible);
-              return new Response(combinedVisible, { status: 200 });
-            } else if (lastPrompt?.autoTransitionHidden) {
-              console.log("[FALLBACK CHAIN] The last chained prompt had autoTransitionHidden. Handling it now...");
-              let fallbackHidden = chainedRetryMsg || "";
-              const { conversationHistory: updatedConv, response: autoResp, updatedIndex } =
-                await handleAutoTransitionHidden(conversationHistory, lastPromptIndex);
-    
-              conversationHistory = updatedConv;
-              currentIndex = updatedIndex;
-    
-              if (!autoResp) {
-                return new Response(fallbackHidden, { status: 200 });
-              }
-              console.log("[FALLBACK CHAIN] Final text after hidden transition:", autoResp);
-              return new Response(autoResp, { status: 200 });
-            }
-          }
-          /* ***********************************************
-           * END NEW BLOCK
-           *********************************************** */
-    
-          return new Response(chainedRetryMsg, { status: 200 });
-        }
-        // ***** END FALLBACK CHAINING CHECK *****
-    
-        conversationHistory.push({ role: "assistant", content: retryMsg });
-        conversationHistory = manageBuffer(conversationHistory);
-        return new Response(retryMsg, { status: 200 });
-      }
-      
-
-      // -------------------------------------------------------------------
-      console.log("[INFO] Validation Succeeded. Now incrementing currentIndex...");
-      currentIndex++; // Increment after successful validation
-    } else {
-      console.log("[INFO] No validation property found. Skipping validation. Incrementing currentIndex...");
-      currentIndex++;
-    }
-
-    // 5) Overwrite system with the new prompt
-    const newPrompt = PROMPT_LIST[currentIndex]?.prompt_text || "No further prompts.";
-    console.log("[DEBUG] Next Prompt is now:", newPrompt);
-
-    conversationHistory = [
-      { role: "system", content: newPrompt },
-      ...conversationHistory.filter((entry) => entry.role !== "system"),
-    ];
-
-    // ------------------------------------------------------------------------
-    // 6) Build LLM payload
-    const mainPayload = {
-      model: getModelForCurrentPrompt(currentIndex),
-      temperature: PROMPT_LIST[currentIndex]?.temperature ?? 0,
-      messages: conversationHistory,
+    const processingInput: ConversationProcessingInput = {
+        messagesFromClient: messagesFromClient,
+        sessionData: sessionData // Pass the initially loaded session data
     };
-    
-    // ----------------------------------------------------------------------------
-    
-    console.log("[DEBUG] Main Payload to LLM:\n", JSON.stringify(mainPayload, null, 2));
 
-    const mainResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      },
-      body: JSON.stringify(mainPayload),
-    });
-    if (!mainResp.ok) {
-      const errorText = await mainResp.text();
-      console.error("[ERROR] LLM call failed:\n", errorText);
-      return new Response("I'm sorry, I couldn't process that. Please try again.", { status: 200 });
-    }
-
-    const mainData = await mainResp.json();
-    const assistantContent1 = mainData.choices?.[0]?.message?.content;
-    if (!assistantContent1) {
-      return new Response("No content returned from the LLM. Please try again.", { status: 200 });
-    }
-
-    /*********************************************
-     * ADDED DEBUG: Log the raw assistant response
-     *********************************************/
-    console.log("[DEBUG] assistantContent1 from LLM:", assistantContent1);
-
-// 7) Add new assistant content to conversation history
-conversationHistory.push({ role: "assistant", content: assistantContent1 });
-console.log("[DEBUG] First API Response Added to Conversation History.");
-
-// ***** START ADDED CODE *****
-// Use the rule: if the prompt we just completed (currentIndex - 2) is marked as important_memory, insert important memory.
-if (currentIndex - 0 >= 0 && PROMPT_LIST[currentIndex - 0]?.important_memory) {
-  insertImportantMemory(assistantContent1);
-}
-// ***** END ADDED CODE *****
-
-// 8) Manage buffer again
-conversationHistory = manageBuffer(conversationHistory);
-
-// 9) Possibly chain
-let finalChained: string | null = null;
-let lastChainedIndex = -1;  // <--- ADDED
-
-if (PROMPT_LIST[currentIndex]?.chaining) {
-  // Remove the previous assistant message that will be replaced by the chained output.
-  conversationHistory.pop();
-
-  // Store a deep clone of conversation history before chaining starts.
-  const preChainHistory = JSON.parse(JSON.stringify(conversationHistory));
-  
-  const chainResponse = await chainIfNeeded(assistantContent1);
-  finalChained = chainResponse;
-  
-  // Restore conversationHistory to its state before chaining.
-  conversationHistory = preChainHistory;
-  
-  // Append the final chain output as the assistant message.
-  conversationHistory.push({ role: "assistant", content: finalChained });
-  
-  // <--- ADDED: store the last used prompt index.
-  lastChainedIndex = currentIndex - 1;
-  
-  // DEBUG ADDED: Log the current index and the final chained result.
-  console.log("[DEBUG] After chainIfNeeded and cleanup, currentIndex is:", currentIndex, "and finalChained is:", finalChained);
-}
-
-// <--- ADDED BLOCK: Check if the prompt we just chained has autoTransitionVisible
-if (lastChainedIndex >= 0) {
-  const lastChainedPrompt = PROMPT_LIST[lastChainedIndex];
-  if (lastChainedPrompt?.autoTransitionVisible) {
-    console.log("[DEBUG] The last chained prompt had autoTransitionVisible. Handling it immediately...");
-
-    let combinedVisible = finalChained || assistantContent1;
-
-    // Call your existing helper with the *last* prompt index
-    const { conversationHistory: updatedConv, response: autoResponse, updatedIndex } =
-      await handleAutoTransitionVisible(conversationHistory, lastChainedIndex);
-
-    // Update conversation & index
-    conversationHistory = updatedConv;
-    currentIndex = updatedIndex;
-
-    // If the LLM returned nothing, just return what we have so far
-    if (!autoResponse) {
-      console.log("[DEBUG] Final text returned to user (no autoResponse found):", combinedVisible);
-      return new Response(combinedVisible || "", { status: 200 });
-    }
-
-    // Otherwise append it
-    combinedVisible += "\n\n" + autoResponse;
-    console.log("[DEBUG] Final text returned to user after chained auto-transition:", combinedVisible);
-    return new Response(combinedVisible, { status: 200 });
-  }
-}
-
-
-    // 10) Auto-Transition Hidden
-    if (PROMPT_LIST[currentIndex]?.autoTransitionHidden) {
-      console.log("[DEBUG - AUTO-HIDDEN] autoTransitionHidden = true. Entering loop...");
-
-      // Create an array to collect auto-transition hidden responses.
-      let autoResponses: string[] = [];
-
-      // Loop through all consecutive hidden prompts.
-      while (
-        currentIndex < PROMPT_LIST.length &&
-        PROMPT_LIST[currentIndex]?.autoTransitionHidden
-      ) {
-        console.log("[DEBUG - AUTO-HIDDEN] Next prompt also autoTransitionHidden, continuing...");
-        const { conversationHistory: updatedConv, response: autoResponse, updatedIndex } =
-          await handleAutoTransitionHidden(conversationHistory, currentIndex);
-
-        conversationHistory = updatedConv;
-        currentIndex = updatedIndex;
-
-        // Append the fetched auto-response (which is still in the payload) to our array.
-        autoResponses.push(autoResponse);
-      }
-
-      // Determine the final visible text:
-      // Use the last auto-response as the text to show to the user.
-      const finalVisible = autoResponses[autoResponses.length - 1] || (finalChained || assistantContent1);
-
-      // Log the hidden responses (all but the last one) so you know they were fetched.
-      for (let i = 0; i < autoResponses.length - 1; i++) {
-        console.log("[DEBUG] Hidden text NOT returned to user:", autoResponses[i]);
-      }
-
-      // Log the final text that will be returned to the user.
-      console.log("[DEBUG] Final text returned to user:", finalVisible);
-      return new Response(finalVisible, { status: 200 });
-    }
-
-    // 11) Auto-Transition Visible
-    if (PROMPT_LIST[currentIndex]?.autoTransitionVisible) {
-      console.log("[DEBUG - AUTO-VISIBLE] Before auto-transition loop, currentIndex:", currentIndex, 
-        "Current prompt details:", JSON.stringify(PROMPT_LIST[currentIndex]));
-
-      console.log("[DEBUG - AUTO-VISIBLE] autoTransitionVisible = true. Entering loop...");
-
-      let combinedVisible = finalChained || assistantContent1;
-
-      while (
-        currentIndex < PROMPT_LIST.length &&
-        PROMPT_LIST[currentIndex]?.autoTransitionVisible
-      ) {
-        console.log("[DEBUG - AUTO-VISIBLE] Next prompt also autoTransitionVisible, continuing...");
-        const { conversationHistory: updatedConv, response: autoResponse, updatedIndex } =
-          await handleAutoTransitionVisible(conversationHistory, currentIndex);
-
-        conversationHistory = updatedConv;
-        currentIndex = updatedIndex;
-
-        if (!autoResponse) {
-          console.log("[DEBUG] Final text returned to user:", combinedVisible);
-          return new Response(combinedVisible, { status: 200 });
+    if (body.stream === true) { // Check the parsed body, not (body as any) <-- Now valid
+        // console.warn("Streaming not fully refactored for hybrid approach yet.");
+        return NextResponse.json({ message: 'Streaming not implemented with this state approach yet.' }, { status: 501 });
+        // result = await handleStreamingFlow(processingInput); // Needs refactoring
+        // Note: handleStreamingFlow would also need cookieStore passed if it modifies session
+    } else {
+        if (messagesFromClient.length === 0) {
+            return NextResponse.json({ message: 'No messages provided in history.' }, { status: 400 });
         }
-        combinedVisible += "\n\n" + autoResponse;
-      }
-
-      console.log("[DEBUG] Final text returned to user:", combinedVisible);
-      return new Response(combinedVisible, { status: 200 });
+        // console.log("Calling handleNonStreamingFlow...");
+        // Pass the processing input which includes the sessionData read earlier
+        result = await handleNonStreamingFlow(processingInput);
+        // console.log("handleNonStreamingFlow returned.");
     }
 
-    // 12) If no auto-transition, just return final
-    console.log("[DEBUG] Final text returned to user:", finalChained || assistantContent1);
-    return new Response(finalChained || assistantContent1, { status: 200 });
+    // === Save State & Send Response ===
+
+    // --- Save Updated Session Data to Cookie ---
+    // Check if the handler returned successfully and provided data to save
+    if (result && result.updatedSessionData) {
+        // console.log("API Route - State to Update Session Cookie:", JSON.stringify(result.updatedSessionData, null, 2));
+        // Pass the cookieStore instance AND the update data to the utility function
+        await updateSessionCookieData(cookieStore, result.updatedSessionData); // <-- Pass cookieStore
+    } else {
+        // console.warn("API Route - No updated session data returned from handler or handler failed. Cookie not explicitly saved.");
+        // Decide if you need to save even on failure, e.g., resetting index?
+        // If handleNonStreamingFlow returns null updatedSessionData on error, this correctly skips saving.
+    }
+
+    // --- Send Response ---
+    // Check if the handler returned successfully and provided content
+    if (result && result.content !== null) {
+       const responseContent = result.content;
+       // console.log("API Route - Sending response content:", responseContent ? responseContent.substring(0,100)+"..." : "null");
+       return new NextResponse(responseContent, {
+           status: 200,
+           headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+       });
+    } else {
+       // This handles cases where result is undefined (shouldn't happen if try/catch works)
+       // OR where result.content is explicitly null (e.g., internal error within the handler)
+       // console.error("API Route - Handler function returned null content or result was undefined.");
+       // Determine appropriate status code - 500 is generic server error
+       return NextResponse.json({ message: 'Processing failed to produce content.' }, { status: 500 });
+    }
+
   } catch (error: any) {
-    console.error("[ERROR] in POST handler:\n", error.message);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    // Catch errors *outside* the main try block (e.g., initial session read, body parsing)
+    // or errors *rethrown* from the main logic block that weren't caught internally
+    // console.error("[ERROR] Unhandled exception in POST handler:", error);
+    // The specific iron-session check is removed as the pattern is corrected.
+    // A generic 500 is appropriate for unexpected errors.
+    return NextResponse.json({ message: 'An internal server error occurred.' }, { status: 500 });
   }
+} // End of POST function
+
+
+async function handleNonStreamingFlow(
+  input: ConversationProcessingInput
+): Promise<HandlerResult> {
+  const { messagesFromClient, sessionData } = input;
+
+  // console.log(`>>> [DEBUG][LOG 0] Inside handleNonStreamingFlow - input.sessionData: typeof = ${typeof sessionData}, Value = ${JSON.stringify(sessionData)}`);
+  // console.log("Entering handleNonStreamingFlow with session data:", JSON.stringify(sessionData, null, 2));
+  // console.log(`   and ${messagesFromClient.length} messages from client.`);
+
+  // --- Step 1: Initialize Local State ---
+  let currentIndex = sessionData.currentIndex;
+  // Create a deep clone of namedMemory to prevent modifying the original session object reference
+  let currentNamedMemory: NamedMemory = JSON.parse(JSON.stringify(sessionData.namedMemory ?? {}));
+  let currentBufferSize = sessionData.currentBufferSize;
+
+  // The following check might still be useful if cloning fails, but less likely now
+  if (typeof currentNamedMemory !== 'object' || currentNamedMemory === null || Array.isArray(currentNamedMemory)) {
+      // console.error(">>> [CRITICAL DEBUG] currentNamedMemory is NOT an object after CLONING! Forcing to {}. Value was:", currentNamedMemory);
+      currentNamedMemory = {};
+  }
+  // console.log(`>>> [DEBUG][LOG 1] After CLONING: typeof currentNamedMemory = ${typeof currentNamedMemory}, Value = ${JSON.stringify(currentNamedMemory)}`);
+
+
+  // --- Prepare History and Get User Message ---
+  let currentHistory: ConversationEntry[] = [...messagesFromClient];
+  const userMessageEntry = currentHistory[currentHistory.length - 1];
+  if (!userMessageEntry || userMessageEntry.role !== 'user') {
+      // console.error("[ERROR] handleNonStreamingFlow: Last message is not from user.");
+      return { content: "Internal error: Invalid history state.", updatedSessionData: null };
+  }
+  const userMessage = userMessageEntry.content;
+
+  try {
+      // console.log("\n[INFO] Processing User Input:", userMessage.substring(0, 100) + "...");
+
+      // --- Step 2: Process Current Prompt & User Input ---
+
+      // Check for conversation completion *before* processing
+      if (currentIndex >= PROMPT_LIST.length) {
+           // console.log("[INFO] Conversation Complete (Index out of bounds).");
+           return {
+               content: "Thank you for your responses! Goodbye.",
+               updatedSessionData: { currentIndex, namedMemory: currentNamedMemory, currentBufferSize }
+           };
+      }
+
+      // Get current prompt details (the one triggered by user input)
+      const currentPromptObj = PROMPT_LIST[currentIndex];
+      const currentPromptText = currentPromptObj?.prompt_text;
+      if (!currentPromptText) {
+          // console.error("[ERROR] Current prompt text is missing at index:", currentIndex);
+          return { content: "Internal error: Could not retrieve current prompt.", updatedSessionData: null };
+      }
+
+      const thisPromptIndex = currentIndex; // Index for DB storage associated with this user message
+
+      const promptValidation = currentPromptObj?.validation;
+      const promptValidationNeeded = typeof promptValidation === 'boolean' ? promptValidation : typeof promptValidation === 'string';
+
+      // console.log("\n[DEBUG] Current Prompt Index:", currentIndex);
+      // console.log("[DEBUG] Current Prompt Text (snippet):\n", currentPromptText.substring(0, 100) + "...");
+      // console.log("[DEBUG] Validation needed?", promptValidationNeeded);
+
+      // 1) Prepare Prompt with Memory (for validation or immediate use)
+      // console.log(`>>> [DEBUG][LOG 2] Before injectNamedMemory (currentPrompt): typeof currentNamedMemory = ${typeof currentNamedMemory}, Value = ${JSON.stringify(currentNamedMemory)}`);
+      const currentPromptWithMemory = injectNamedMemory(currentPromptText, currentNamedMemory);
+      // Create history context *just* for validation if needed
+      const historyForValidation = [
+          { role: "system", content: currentPromptWithMemory },
+          ...currentHistory.filter((entry) => entry.role !== "system"),
+      ];
+
+      // 2) Save User Input to Memory (if needed, uses currentPromptObj config)
+      saveUserInputToMemoryIfNeeded(userMessage, currentPromptObj, currentNamedMemory);
+      // console.log(`>>> [DEBUG][LOG 3b] After saveUserInputToMemoryIfNeeded: typeof currentNamedMemory = ${typeof currentNamedMemory}, Value = ${JSON.stringify(currentNamedMemory)}`);
+
+
+      let isStorable = true; // Flag for DB storage
+      let finalResponseContent: string | null = null; // Holds the response to send back
+
+      // --- Step 3: Validation Block ---
+      if (promptValidationNeeded) {
+          // console.log("[INFO] This prompt requires validation.");
+          const customValidation = typeof promptValidation === "string" ? promptValidation : undefined;
+          const isValid = await validateInput(userMessage, currentPromptWithMemory, customValidation);
+
+          if (!isValid) {
+              // Keep currentIndex the same, proceed to main LLM call for this prompt
+              // console.log("[INFO] Validation Failed. Will re-run prompt index:", currentIndex);
+              isStorable = false; // Don't store interaction if validation failed initially
+              // NOTE: Rollback, retry message generation, and early return logic are REMOVED.
+          } else {
+              // --- Validation Succeeded ---
+              // console.log("[INFO] Validation Succeeded.");
+              // Increment index *immediately* after successful validation
+              currentIndex++;
+              // console.log("[INFO] Index incremented due to successful validation. New index:", currentIndex);
+              // Now proceed to main LLM call for the *new* currentIndex (if applicable)
+              // Check if the new index is out of bounds *after* incrementing
+              if (currentIndex >= PROMPT_LIST.length) {
+                   // console.log("[INFO] Conversation Complete (reached end after successful validation). Index:", currentIndex);
+                   // Need a final message here if conversation ends immediately after validation
+                   finalResponseContent = "Thank you! That was the last piece of information needed.";
+                   // Return immediately as there's no next prompt to run
+                   return {
+                       content: finalResponseContent,
+                       updatedSessionData: { currentIndex, namedMemory: currentNamedMemory, currentBufferSize }
+                   };
+              }
+              // If not out of bounds, the flow will continue to Step 4 with the incremented index
+          }
+      } else {
+          // --- No validation needed ---
+          // console.log("[INFO] No validation needed.");
+          // Index will be incremented AFTER the main LLM call in Step 5
+      }
+
+      // --- Step 4: Main Flow: Get LLM Response for the *current* prompt (index `currentIndex`) ---
+      // currentIndex might have been incremented if validation passed
+
+      // console.log(`>>> [DEBUG][LOG 5] Start of main LLM flow for index ${currentIndex}. typeof currentNamedMemory = ${typeof currentNamedMemory}, Value = ${JSON.stringify(currentNamedMemory)}`);
+
+      // Get the prompt object based on the potentially updated currentIndex
+      // Important: Use the potentially incremented `currentIndex` here
+      const effectivePromptObj = PROMPT_LIST[currentIndex];
+      if (!effectivePromptObj) { // Should be caught by the check inside the validation block, but double-check
+          // console.error("[ERROR] Attempting to run main flow, but index is out of bounds:", currentIndex);
+          // This path might be hit if validation succeeded but there are no more prompts.
+          // The check inside the `isValid` block should handle this, but as a safety net:
+          return { content: "Thank you, the conversation is complete.", updatedSessionData: { currentIndex, namedMemory: currentNamedMemory, currentBufferSize } };
+      }
+
+      // Re-evaluate prompt text with memory for the potentially new index
+      const effectivePromptText = effectivePromptObj.prompt_text || "";
+      // Use potentially updated memory AND the potentially updated prompt text
+      const effectivePromptWithMemory = injectNamedMemory(effectivePromptText, currentNamedMemory); 
+
+      // Update dynamic buffer size based on the prompt that is *about to run* (effectivePromptObj)
+      const newBufferSize = updateDynamicBufferMemory(effectivePromptObj, currentBufferSize);
+      if (newBufferSize !== currentBufferSize) {
+           // console.log(`[BUFFER DYNAMIC] Buffer size changed from ${currentBufferSize} to ${newBufferSize}`);
+           currentBufferSize = newBufferSize; // Update local buffer size state
+      }
+      // console.log("[DEBUG] Effective buffer size for main call:", currentBufferSize);
+
+      // Prepare the *current* system prompt (using currentPromptObj and currentPromptWithMemory)
+      // console.log("[DEBUG] Preparing for main LLM call (index", currentIndex, "):", effectivePromptWithMemory.substring(0, 100) + "...");
+
+      // Prepare conversation history for the LLM call
+      let historyForLLM = [
+          { role: "system", content: effectivePromptWithMemory }, // Use the prompt text for the current index
+          ...currentHistory.filter((entry) => entry.role !== "system"), // Use the initial client history for this turn
+      ];
+      historyForLLM = manageBuffer(historyForLLM, currentBufferSize); // Apply buffer
+
+      // --- Main LLM Call ---
+      const mainPayload = {
+          model: getModelForCurrentPrompt(currentIndex), // Use potentially updated index
+          temperature: effectivePromptObj?.temperature ?? 0,
+          messages: historyForLLM, // History is prepared using effectivePromptWithMemory
+      };
+      // console.log("[DEBUG] Main Payload to LLM (index", currentIndex, "):", JSON.stringify(mainPayload, null, 2));
+      const rawAssistantContent = await fetchApiResponseWithRetry(mainPayload);
+      const assistantContentCleaned = cleanLlmResponse(rawAssistantContent); // Cleaned LLM response
+
+      if (!assistantContentCleaned) {
+          // console.error("[ERROR] Main LLM call failed or returned empty content after retries for index:", currentIndex);
+          finalResponseContent = "I'm sorry, I couldn't process that. Please try again.";
+          isStorable = false;
+          // Return current state even on error, with the error message. Index doesn't advance.
+          return {
+              content: finalResponseContent,
+              updatedSessionData: { currentIndex, namedMemory: currentNamedMemory, currentBufferSize } // Return state at point of failure
+          };
+      }
+
+      // --- Process Assistant Response Memory (Save & Prefix) ---
+      // Uses config for the prompt that just ran (currentPromptObj)
+      // console.log("[DEBUG] Processing assistant response memory for index:", currentIndex);
+      finalResponseContent = processAssistantResponseMemory(
+          assistantContentCleaned,
+          effectivePromptObj, // Use the object for the prompt that just ran
+          currentNamedMemory,
+          currentIndex // Pass updated index for logging
+      );
+      // console.log(`>>> [DEBUG][LOG 7b] After processAssistantResponseMemory: typeof currentNamedMemory = ${typeof currentNamedMemory}, Value = ${JSON.stringify(currentNamedMemory)}`);
+      // console.log("[DEBUG] finalResponseContent after memory processing:", finalResponseContent ? finalResponseContent.substring(0, 100) + "..." : "null");
+
+      // --- Create History Context *After* Main LLM Call ---
+      // This history includes the response just generated and will be the base for chaining/transitions
+      let historyAfterLLM = [
+          ...historyForLLM, // History used for the call
+          { role: "assistant", content: finalResponseContent } // Add the response we just got
+      ];
+      // Apply important memory insertion if needed for the context (doesn't affect finalResponseContent directly)
+      if (effectivePromptObj.important_memory) {
+          // console.log(`[IMPORTANT MEMORY][Index: ${currentIndex}] Applying important memory.`);
+          historyAfterLLM = insertImportantMemory(historyAfterLLM, finalResponseContent);
+      }
+
+
+      
+  // --- Step 5: Process Response, Check Flag, and Potentially Trigger Transitions ---
+
+  const executedPromptIndex = currentIndex;
+  const executedPromptObj = effectivePromptObj;
+
+  // History context for transitions should use the prompt that *actually ran*
+  let historyContextForNextStep = [
+       { role: "system", content: effectivePromptWithMemory }, // Use prompt for the index that ran
+       ...currentHistory.filter((entry) => entry.role !== "system"), // History before the call
+       { role: "assistant", content: finalResponseContent } // Add the response we just got
+   ];
+  // Apply important memory based on the prompt that *actually ran*
+  if (executedPromptObj.important_memory) {
+      // console.log(`[IMPORTANT MEMORY][Index: ${executedPromptIndex}] Applying important memory.`);
+      historyContextForNextStep = insertImportantMemory(historyContextForNextStep, finalResponseContent);
+  }
+
+
+  // Initialize flags/variables for post-processing
+  let transitionsWereTriggered = false;
+  let finalCombinedContent = finalResponseContent || "";
+  let nextIndexAfterProcessing = executedPromptIndex + 1;
+
+  // --- Check if the EXECUTED prompt triggers transitions ---
+  // console.log(`\n[DEBUG][FLAG CHECK] Checking flags for prompt index: ${executedPromptIndex}`);
+  // console.log(`[DEBUG][FLAG CHECK] Prompt Object text snippet: ${executedPromptObj?.prompt_text?.substring(0, 50)}...`);
+  const hasHiddenFlag = executedPromptObj?.autoTransitionHidden === true;
+  const hasVisibleFlag = executedPromptObj?.autoTransitionVisible === true;
+  // console.log(`[DEBUG][FLAG CHECK] Has autoTransitionHidden flag? ${hasHiddenFlag}`);
+  // console.log(`[DEBUG][FLAG CHECK] Has autoTransitionVisible flag? ${hasVisibleFlag}`);
+
+
+  if (hasHiddenFlag || hasVisibleFlag) {
+      // console.log(`\n[DEBUG][TRANSITION TRIGGER] Prompt ${executedPromptIndex} has an autoTransition flag. Preparing transition sequence.`);
+      transitionsWereTriggered = true; // Mark that we entered the transition phase
+
+      // Start transition checks from the *next* index
+      let currentTransitionIndex = executedPromptIndex + 1;
+      // console.log(`[DEBUG][TRANSITION TRIGGER] Starting transition checks from index ${currentTransitionIndex}.`);
+
+      // Adjust initial combined content based on the trigger type
+      if (hasHiddenFlag) {
+          // console.log("[DEBUG][TRANSITION TRIGGER] Triggering prompt was hidden. Clearing initial response for overwrite by handler(s).");
+          finalCombinedContent = ""; // Start blank
+      } else {
+          // console.log("[DEBUG][TRANSITION TRIGGER] Triggering prompt was visible. Keeping its response as initial combined content.");
+          // finalCombinedContent already holds Response N
+      }
+
+      // --- Auto-Transition Loops (Start checking from currentTransitionIndex) ---
+
+      // Hidden Loop
+      // console.log(`\n[DEBUG][TRANSITION LOOP] Checking for AUTO-HIDDEN transitions starting at index: ${currentTransitionIndex}`);
+      while (
+          currentTransitionIndex < PROMPT_LIST.length &&
+          PROMPT_LIST[currentTransitionIndex]?.autoTransitionHidden
+      ) {
+          const loopStartIndex = currentTransitionIndex;
+          // console.log(`[DEBUG][AUTO-HIDDEN LOOP] Found hidden transition at index ${loopStartIndex}.`);
+          const { response: autoResp, updatedIndex, updatedNamedMemory, updatedBufferSize, conversationHistory: historyAfterHidden } =
+              await handleAutoTransitionHidden(historyContextForNextStep, currentTransitionIndex, currentNamedMemory, currentBufferSize);
+          // Update state
+          currentTransitionIndex = updatedIndex; // Handler updates the index
+          currentNamedMemory = updatedNamedMemory ?? {};
+          currentBufferSize = updatedBufferSize;
+          historyContextForNextStep = historyAfterHidden;
+          // Hidden responses OVERWRITE
+          finalCombinedContent = autoResp ?? "";
+          // console.log(`[DEBUG][AUTO-HIDDEN LOOP] Overwrote combined content. Index is now ${currentTransitionIndex}.`);
+      }
+       // console.log(`[DEBUG][TRANSITION LOOP] Exited AUTO-HIDDEN loop. Current transition index: ${currentTransitionIndex}`);
+
+      // Visible Loop
+      // console.log(`\n[DEBUG][TRANSITION LOOP] Checking for AUTO-VISIBLE transitions starting at index: ${currentTransitionIndex}`);
+      while (
+          currentTransitionIndex < PROMPT_LIST.length &&
+          PROMPT_LIST[currentTransitionIndex]?.autoTransitionVisible
+      ) {
+           const loopStartIndex = currentTransitionIndex;
+           // console.log(`[DEBUG][AUTO-VISIBLE LOOP] Found visible transition at index ${loopStartIndex}.`);
+           const { response: autoResp, updatedIndex, updatedNamedMemory, updatedBufferSize, conversationHistory: historyAfterVisible } =
+              await handleAutoTransitionVisible(historyContextForNextStep, currentTransitionIndex, currentNamedMemory, currentBufferSize);
+            // Update state
+           currentTransitionIndex = updatedIndex; // Handler updates the index
+           currentNamedMemory = updatedNamedMemory ?? {};
+           currentBufferSize = updatedBufferSize;
+           historyContextForNextStep = historyAfterVisible;
+           // Append visible responses
+           if (autoResp) {
+               const separator = finalCombinedContent ? "\n\n" : "";
+               finalCombinedContent += separator + autoResp;
+               // console.log(`[DEBUG][AUTO-VISIBLE LOOP] Appended response. Index is now ${currentTransitionIndex}.`);
+           } else {
+               // console.log("[DEBUG][AUTO-VISIBLE LOOP] Visible handler returned null response. Breaking loop.");
+               break;
+           }
+      }
+      // console.log(`[DEBUG][TRANSITION LOOP] Exited AUTO-VISIBLE loop. Current transition index: ${currentTransitionIndex}`);
+
+      // After loops, currentTransitionIndex holds the index of the prompt AFTER the last transition (or the first non-transition prompt)
+      nextIndexAfterProcessing = currentTransitionIndex; // Update the final index
+
+      // --- Execute the NEXT NORMAL Prompt if transitions landed on one ---
+      // console.log(`\n[DEBUG][POST-TRANSITION] Checking if a final normal prompt needs to run at index: ${nextIndexAfterProcessing}`);
+      if (nextIndexAfterProcessing < PROMPT_LIST.length) {
+          const nextNormalPromptObj = PROMPT_LIST[nextIndexAfterProcessing];
+          if (!nextNormalPromptObj?.autoTransitionHidden && !nextNormalPromptObj?.autoTransitionVisible) {
+               // console.log(`[DEBUG][POST-TRANSITION] Transitions occurred and landed on normal prompt ${nextIndexAfterProcessing}. Executing it.`);
+               // Update buffer size
+               currentBufferSize = updateDynamicBufferMemory(nextNormalPromptObj, currentBufferSize);
+               // Prepare prompt text
+               const finalPromptText = nextNormalPromptObj.prompt_text || "Error: No prompt text.";
+               const finalPromptWithMemory = injectNamedMemory(finalPromptText, currentNamedMemory);
+               // Prepare history
+               let historyForFinalCall = [
+                   { role: "system", content: finalPromptWithMemory },
+                   ...historyContextForNextStep.filter((entry) => entry.role !== "system"),
+               ];
+               historyForFinalCall = manageBuffer(historyForFinalCall, currentBufferSize);
+               // Final LLM Call
+               const finalPayload = { model: getModelForCurrentPrompt(nextIndexAfterProcessing), temperature: nextNormalPromptObj?.temperature ?? 0, messages: historyForFinalCall };
+               const rawFinalAssistantContent = await fetchApiResponseWithRetry(finalPayload);
+               const finalAssistantContentCleaned = cleanLlmResponse(rawFinalAssistantContent);
+
+               if (finalAssistantContentCleaned) {
+                    // console.log(`[DEBUG][POST-TRANSITION] Final LLM Response Received: "${finalAssistantContentCleaned.substring(0, 100)}..."`);
+                    const processedFinalContent = processAssistantResponseMemory(finalAssistantContentCleaned, nextNormalPromptObj, currentNamedMemory, nextIndexAfterProcessing);
+                    // Append
+                    const separator = finalCombinedContent ? "\n\n" : "";
+                    finalCombinedContent += separator + processedFinalContent;
+                    // console.log(`[DEBUG][POST-TRANSITION] Appended final prompt response.`);
+                    // Increment index one last time *after* successful execution
+                    nextIndexAfterProcessing++;
+                    // console.log(`[DEBUG][POST-TRANSITION] Incremented index after final prompt. Final index: ${nextIndexAfterProcessing}`);
+               } else {
+                   // console.warn(`[WARN][POST-TRANSITION] Final LLM call for index ${nextIndexAfterProcessing} failed. Index not incremented.`);
+               }
+          } else {
+               // console.log(`[DEBUG][POST-TRANSITION] Transitions occurred but landed on another transition prompt (${nextIndexAfterProcessing}) or end of list. No final normal prompt executed.`);
+          }
+      } else {
+           // console.log(`[DEBUG][POST-TRANSITION] Transitions finished at end of prompt list (index ${nextIndexAfterProcessing}). No final normal prompt to execute.`);
+      }
+
+  } else {
+      // The executed prompt did NOT have an auto-transition flag.
+      // console.log(`\n[DEBUG][TRANSITION TRIGGER] Prompt ${executedPromptIndex} has NO autoTransition flag. Normal flow, no transitions triggered.`);
+      // nextIndexAfterProcessing remains executedPromptIndex + 1 from initialization
+      // console.log(`[DEBUG] Index for next turn will be: ${nextIndexAfterProcessing}.`);
+      // finalCombinedContent remains the response from the executed prompt.
+  }
+
+  // --- Update finalResponseContent and currentIndex for saving ---
+  finalResponseContent = finalCombinedContent;
+  // Always use the index calculated after step 5 unless an error stopped processing earlier
+  currentIndex = nextIndexAfterProcessing;
+  // console.log("[DEBUG] Index determined after Step 5 (transitions/increment):", currentIndex);
+
+
+
+
+
+
+      // --- Step 6: Store and Return Final State ---
+
+      console.log("[DEBUG] Reached end of processing for this turn. Final index to save FOR NEXT TURN:", currentIndex);
+
+      // Store final interaction result if needed (use the original prompt index `thisPromptIndex`)
+      if (isStorable) {
+          const contentToStore = finalResponseContent ?? ""; // Ensure we store a string
+          // await handleDatabaseStorageIfNeeded(thisPromptIndex, contentToStore, userMessage);
+          // console.log("[DB-DEBUG] Storing final content for original prompt index:", thisPromptIndex);
+      } else {
+          // console.log("[DB-DEBUG] Interaction was marked non-storable. Skipping storage for original prompt index:", thisPromptIndex);
+      }
+
+      // console.log(`>>> [DEBUG][LOG 8] Before final return: typeof currentNamedMemory = ${typeof currentNamedMemory}, Value = ${JSON.stringify(currentNamedMemory)}`);
+      // console.log("handleNonStreamingFlow final session state to save:", JSON.stringify({ currentIndex, namedMemory: currentNamedMemory, currentBufferSize }, null, 2));
+
+      return {
+          content: finalResponseContent, // The final content after all processing
+          updatedSessionData: {
+              // FIX: Use original index (thisPromptIndex) if validation failed (isStorable=false),
+              // otherwise use the potentially advanced index (currentIndex which holds nextIndexAfterProcessing)
+              currentIndex: isStorable ? currentIndex : thisPromptIndex,
+              namedMemory: currentNamedMemory,
+              currentBufferSize: currentBufferSize
+          }
+      };
+
+  } catch (error: any) {
+      console.error("[JEST_DEBUG] ERROR CAUGHT in handleNonStreamingFlow:", error); // <-- ADD LOG
+      // console.error("[ERROR] Unhandled exception in handleNonStreamingFlow:", error);
+      // console.log(`>>> [DEBUG][LOG 9 - ERROR CATCH] State before error return: typeof currentNamedMemory = ${typeof currentNamedMemory}, Value = ${JSON.stringify(currentNamedMemory)}`);
+      // Return null update data to avoid saving partial/incorrect state on unexpected errors
+      return { content: "An internal server error occurred during processing.", updatedSessionData: null };
+  } finally {
+      // console.log("Exiting handleNonStreamingFlow.");
+  }
+} // End of handleNonStreamingFlow
+
+
+// --- insertImportantMemory (Helper used within handleNonStreamingFlow) ---
+// NOTE: This function MUST return the modified history.
+// It should be called like: historyAfterLLM = insertImportantMemory(historyAfterLLM, ...)
+function insertImportantMemory(conversationHistory: ConversationEntry[], content: string): ConversationEntry[] {
+    const updatedHistory = [...conversationHistory]; // Work on a copy
+    const systemIndex = updatedHistory.findIndex((msg) => msg.role === "system");
+    let insertIndex = systemIndex !== -1 ? systemIndex + 1 : 0; // Insert after system or at start
+
+    // Skip past any existing important memory lines right after system prompt
+    while (
+        insertIndex < updatedHistory.length &&
+        updatedHistory[insertIndex].role === "assistant" &&
+        updatedHistory[insertIndex].content.trim().startsWith("Important_memory:")
+    ) {
+        insertIndex++;
+    }
+
+    // Insert the new important memory
+    updatedHistory.splice(insertIndex, 0, {
+        role: "assistant", // Role should likely be assistant for memory
+        content: `Important_memory: ${content}`
+    });
+
+    // console.log("[DEBUG] Important_memory helper inserted at index:", insertIndex);
+    return updatedHistory; // Return the modified array
 }
+// --- handleStreamingFlow ---
+// NOTE: This function uses global variables (conversationHistory, currentBufferSize, currentIndex)
+// which is inconsistent with the state management in handleNonStreamingFlow.
+// It needs significant refactoring to work correctly with the session cookie state model.
+// For now, it remains as provided but is likely non-functional in the current setup.
+let conversationHistory: ConversationEntry[] = []; // Example global state (problematic)
+let currentBufferSize = BUFFER_SIZE; // Example global state (problematic)
+let currentIndex = 0; // Example global state (problematic)
 
-
-/******************************************
- * handleStreamingFlow (No Changes)
- ******************************************/
 async function handleStreamingFlow(incomingMessage: string): Promise<Response> {
-  console.log("[INFO] [STREAM MODE] Received request for streaming.");
+  // console.log("[INFO] [STREAM MODE] Received request for streaming.");
+  // console.warn("[WARNING] handleStreamingFlow uses outdated global state and needs refactoring for session cookie model.");
 
   if (!incomingMessage?.trim()) {
-    console.log("[WARN] No User Input Received. Returning Error.");
+    // console.log("[WARN] No User Input Received. Returning Error.");
     return new Response("No input received. Please try again.", { status: 400 });
   }
 
-  // We'll do a *very simple* streaming approach:
-  // 1) Insert user message into conversation
-  // 2) Build a payload with `stream: true`
-  // 3) Return SSE with partial tokens
-
-  // If you want to incorporate EXACT chaining/validation logic in streaming mode,
-  // you can replicate the steps from handleNonStreamingFlow. For brevity, we just do a single streamed response.
-
+  // This uses global state, which won't reflect the actual session
   conversationHistory.push({ role: "user", content: incomingMessage });
-  conversationHistory = manageBuffer(conversationHistory);
+  conversationHistory = manageBuffer(conversationHistory, currentBufferSize); // Uses global buffer size
 
-  // Use the last system prompt or a fallback
-  const currentPrompt = PROMPT_LIST[currentIndex]?.prompt_text || "No further prompts.";
+  const currentPrompt = PROMPT_LIST[currentIndex]?.prompt_text || "No further prompts."; // Uses global index
   conversationHistory.unshift({ role: "system", content: currentPrompt });
 
-  // Build streaming payload
   const payload = {
-    model: "llama-3.3-70b-versatile",
+    model: DEFAULT_OPENAI_MODEL,
     temperature: 0,
-    stream: true, // <--- important
-    messages: conversationHistory,
+    stream: true,
+    messages: conversationHistory, // Uses global history
   };
 
-  // Make streaming call
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const resp = await fetch(OPENAI_API_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
     },
     body: JSON.stringify(payload),
   });
 
-  if (!resp.ok || !resp.body) {
+  if (!resp.ok) { // Check !resp.ok separately first
     const errorText = await resp.text();
-    console.error("[ERROR] streaming request failed:\n", errorText);
+    // console.error("[ERROR] streaming request failed:\n", errorText);
     return new Response("Error calling streaming LLM API.", { status: 500 });
   }
 
-  // We'll convert the OpenAI-style SSE from GROQ into a similar SSE for the client
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
-
   const transformStream = new TransformStream();
   const writable = transformStream.writable.getWriter();
 
   (async () => {
+    // Check for resp.body *inside* the async IIFE, before using it
+    if (!resp.body) {
+      // console.error("[ERROR] Response body is null, cannot stream.");
+      // Need to handle this error within the async function, maybe close the writer
+      await writable.close(); 
+      return; // Exit the async function
+    }
     try {
-      for await (const chunk of streamAsyncIterable(resp.body)) {
+      for await (const chunk of streamAsyncIterable(resp.body)) { // Now resp.body is guaranteed non-null here
         const data = decoder.decode(chunk);
-
-        // The OpenAI SSE data lines often look like: 
-        // data: {...}\n
-        // data: {...}\n
-        // data: [DONE]\n
-        //
-        // We'll just pass them along as-is to the client in an SSE format.
         const lines = data.split("\n");
         for (const line of lines) {
           if (!line.trim()) continue;
           if (line.startsWith("data: [DONE]")) {
-            // End of stream
             await writable.write(encoder.encode(`data: [DONE]\n\n`));
             await writable.close();
             return;
           }
-          // Otherwise, pass the chunk along
           await writable.write(encoder.encode(`${line}\n`));
         }
       }
     } catch (e) {
-      console.error("[ERROR] in SSE streaming:", e);
-      await writable.close();
+      // console.error("[ERROR] in SSE streaming:", e);
+      await writable.close(); // Ensure writer is closed on error
+    } finally {
+       // Ensure writer is closed if loop finishes unexpectedly
+       // await writable.close(); // This might cause issues if already closed. Check logic.
     }
   })();
 
-  // Return the readable end of the TransformStream as our SSE
   return new Response(transformStream.readable, {
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
@@ -1023,66 +716,3 @@ async function* streamAsyncIterable(stream: ReadableStream<Uint8Array>) {
   }
 }
 
-// ---------------------------------------------------------------------------------
-// 1) Helper Function: Insert Important Memory (Place Before POST)
-// ---------------------------------------------------------------------------------
-function insertImportantMemory(content: string) {
-  const systemIndex = conversationHistory.findIndex((msg) => msg.role === "system");
-  let insertIndex = systemIndex + 1;
-
-  // Ensure important memory lines are stored in order
-  while (
-    insertIndex < conversationHistory.length &&
-    conversationHistory[insertIndex].role === "assistant" &&
-    conversationHistory[insertIndex].content.trim().startsWith("Important_memory:")
-  ) {
-    insertIndex++;
-  }
-
-  // Insert the important memory entry
-  conversationHistory.splice(insertIndex, 0, {
-    role: "assistant",
-    content: `Important_memory: ${content}`
-  });
-
-  console.log("[DEBUG] Important_memory inserted at index:", insertIndex);
-}
-
-
-
-/**
- * ---------------------------------------------------------------------------------
- * DO NOT TOUCH: BUFFER MANAGEMENT SECTION
- * ---------------------------------------------------------------------------------
- */
-function manageBuffer(conversationHistory: { role: string; content: string }[]) {
-  console.log(`[DEBUG] Current Conversation History Length: ${conversationHistory.length}`);
-
-  const systemMessage = conversationHistory.find((entry) => entry.role === "system");
-
-  const importantMemoryLines = conversationHistory.filter(
-    (entry) =>
-      entry.role === "assistant" &&
-      entry.content.trim().startsWith("Important_memory:")
-  );
-
-  const otherMessages = conversationHistory.filter(
-    (entry) => entry !== systemMessage && !importantMemoryLines.includes(entry)
-  );
-
-  if (otherMessages.length > BUFFER_SIZE) {
-    const excessCount = otherMessages.length - BUFFER_SIZE;
-    console.log(`[DEBUG] Trimming ${excessCount} oldest non-system, non-important messages.`);
-
-    const trimmed = otherMessages.slice(excessCount);
-
-    const finalHistory = [systemMessage, ...importantMemoryLines, ...trimmed].filter(Boolean);
-
-    console.log(
-      "[DEBUG] Trimmed Conversation History (with Important Memory Kept):",
-      JSON.stringify(finalHistory, null, 2)
-    );
-    return finalHistory;
-  }
-  return conversationHistory;
-}
